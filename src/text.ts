@@ -1,6 +1,8 @@
 import type { DocumentInitParameters, PDFDocumentProxy, TextItem, TextStyle } from 'pdfjs-dist/types/src/display/api'
+import type { TextBlock } from './visual-order'
+import { markdownFromBlocks } from './markdown'
 import { getDocumentProxy, isPDFDocumentProxy } from './utils'
-import { textInVisualOrder } from './visual-order'
+import { blocksInVisualOrder, textInVisualOrder } from './visual-order'
 
 export interface StructuredTextItem {
   /** Text content. */
@@ -156,6 +158,69 @@ function mergePageTexts(
   }
 
   return texts.join('\n').replace(/\s+/g, ' ')
+}
+
+export async function extractTextBlocks(
+  data: DocumentInitParameters['data'] | PDFDocumentProxy,
+): Promise<{ totalPages: number, blocks: TextBlock[][] }> {
+  const ownsDocument = !isPDFDocumentProxy(data)
+  const pdf = ownsDocument ? await getDocumentProxy(data) : data
+  const blocks: TextBlock[][] = []
+
+  try {
+    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++)
+      blocks.push(await getPageBlocks(pdf, pageNumber))
+  }
+  finally {
+    if (ownsDocument)
+      await pdf.cleanup()
+  }
+
+  return { totalPages: pdf.numPages, blocks }
+}
+
+export function extractMarkdown(
+  data: DocumentInitParameters['data'] | PDFDocumentProxy,
+  options?: { mergePages?: false },
+): Promise<{
+  totalPages: number
+  markdown: string[]
+}>
+export function extractMarkdown(
+  data: DocumentInitParameters['data'] | PDFDocumentProxy,
+  options: { mergePages: true },
+): Promise<{
+  totalPages: number
+  markdown: string
+}>
+export async function extractMarkdown(
+  data: DocumentInitParameters['data'] | PDFDocumentProxy,
+  options: { mergePages?: boolean } = {},
+) {
+  const { mergePages = false } = options
+  const { totalPages, blocks } = await extractTextBlocks(data)
+  const pages = blocks.map(pageBlocks => markdownFromBlocks(pageBlocks))
+
+  return {
+    totalPages,
+    markdown: mergePages ? pages.join('\n\n') : pages,
+  }
+}
+
+async function getPageBlocks(
+  document: PDFDocumentProxy,
+  pageNumber: number,
+): Promise<TextBlock[]> {
+  const page = await document.getPage(pageNumber)
+
+  try {
+    const content = await page.getTextContent()
+    const items = (content.items as TextItem[]).filter(item => item.str != null)
+    return blocksInVisualOrder(items, page.getViewport({ scale: 1 }).transform)
+  }
+  finally {
+    page.cleanup()
+  }
 }
 
 async function getPageText(

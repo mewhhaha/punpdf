@@ -222,6 +222,50 @@ function extractTextPages(
 }>
 ```
 
+### `extractTextBlocks`
+
+Extracts the visual reading order as structural blocks – one array per page. Lines markedly larger than the page's body text become headings (levels follow the page's font size tiers), tab-separated lines become table rows, and everything else groups into paragraphs. Use this when you want to build your own structured output on top of the layout analysis.
+
+**Type Declaration**
+
+```ts
+type TextBlock
+  = | { kind: 'heading', level: number, text: string }
+    | { kind: 'table', rows: string[][] }
+    | { kind: 'paragraph', lines: string[] }
+
+function extractTextBlocks(
+  data: DocumentInitParameters['data'] | PDFDocumentProxy,
+): Promise<{
+  totalPages: number
+  blocks: TextBlock[][]
+}>
+```
+
+### `extractMarkdown`
+
+Renders the structural blocks as GitHub-flavored Markdown – headings become `#` headings, tables become Markdown tables (with the first row as the header row, since PDF tables carry no header markup), and paragraphs keep their line structure. If `mergePages` is set to `true`, pages are joined with blank lines into a single string.
+
+```ts
+import { extractMarkdown } from '@mewhhaha/punpdf'
+
+const { markdown } = await extractMarkdown(buffer, { mergePages: true })
+```
+
+**Type Declaration**
+
+```ts
+function extractMarkdown(
+  data: DocumentInitParameters['data'] | PDFDocumentProxy,
+  options?: {
+    mergePages?: boolean
+  }
+): Promise<{
+  totalPages: number
+  markdown: string[] | string
+}>
+```
+
 ### `extractTextItems`
 
 Extracts text with layout information – one array of positioned items per page. Useful when plain text is not enough and you need coordinates, font sizes, or reading direction, e.g. for table detection or positional parsing.

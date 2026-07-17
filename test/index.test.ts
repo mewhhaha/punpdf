@@ -7,7 +7,9 @@ import {
   definePDFJSModule,
   extractImages,
   extractLinks,
+  extractMarkdown,
   extractText,
+  extractTextBlocks,
   extractTextItems,
   extractTextPages,
   getDocumentProxy,
@@ -222,6 +224,49 @@ describe('punpdf', () => {
       )
       expect(rotated.text, `rotation ${rotation}`).toEqual(upright.text)
     }
+  })
+
+  it('extracts structured blocks from a table PDF', async () => {
+    const { blocks, totalPages } = await extractTextBlocks(await getPDF('table.pdf'))
+
+    expect(totalPages).toBe(1)
+    expect(blocks[0]).toEqual([
+      { kind: 'heading', level: 1, text: 'Invoice' },
+      { kind: 'table', rows: [
+        ['Item', 'Qty', 'Price'],
+        ['Demolition', '2', '450.00'],
+        ['Framing', '5', '1200.00'],
+        ['Painting', '3', '300.00'],
+      ] },
+    ])
+  })
+
+  it('extracts a mixed layout page as markdown', async () => {
+    const { markdown } = await extractMarkdown(await getPDF('mixed-layout.pdf'))
+
+    expect(markdown[0]).toBe(
+      '# Quarterly Review\n'
+      + '\n'
+      + 'Revenue grew steadily across all regions\n'
+      + 'with costs held flat for the quarter.\n'
+      + '\n'
+      + '| North | 120.00 |\n'
+      + '| --- | --- |\n'
+      + '| South | 98.50 |\n'
+      + '| East | 210.75 |\n'
+      + '\n'
+      + 'Alpha reports strong\n'
+      + 'engagement in the north\n'
+      + 'while retention holds\n'
+      + 'above expectations.\n'
+      + '\n'
+      + 'Beta launches next\n'
+      + 'quarter with pricing\n'
+      + 'still under internal\n'
+      + 'review by finance.\n'
+      + '\n'
+      + 'Page 1 of 1',
+    )
   })
 
   it('keeps line structure when merging pages in visual reading order', async () => {

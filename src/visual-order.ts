@@ -19,6 +19,11 @@ interface Line {
   items: PositionedItem[]
 }
 
+interface VisualLine {
+  text: string
+  fontSize: number
+}
+
 /**
  * Assembles page text in visual reading order: top to bottom, left to right,
  * as positioned by the given viewport transform. Side-by-side text blocks
@@ -30,6 +35,99 @@ export function textInVisualOrder(
   items: VisualOrderItem[],
   viewportTransform: number[],
 ): string {
+  return pageLineBlocks(items, viewportTransform)
+    .map(group => group
+      .map(block => block.map(line => line.text).join('\n'))
+      .join('\n'))
+    .filter(text => text.length > 0)
+    .join('\n')
+}
+
+/** A structural view of a page: headings, tables, and paragraphs in reading order. */
+export type TextBlock
+  = | { kind: 'heading', level: number, text: string }
+    | { kind: 'table', rows: string[][] }
+    | { kind: 'paragraph', lines: string[] }
+
+/**
+ * Classifies the page's visual reading order into structural blocks: lines
+ * markedly larger than the page's body text become headings (levels follow
+ * the page's size tiers), tab-separated lines become table rows, and
+ * everything else groups into paragraphs.
+ */
+export function blocksInVisualOrder(
+  items: VisualOrderItem[],
+  viewportTransform: number[],
+): TextBlock[] {
+  const lineBlocks = pageLineBlocks(items, viewportTransform).flat()
+  const visibleLines = lineBlocks.flat().filter(line => line.text.length > 0)
+  // Body text is the page's most frequent line size; a median would skew
+  // upward on pages that are mostly headings.
+  const sizeCounts = new Map<number, number>()
+  for (const line of visibleLines) {
+    const size = Math.round(line.fontSize * 2) / 2
+    sizeCounts.set(size, (sizeCounts.get(size) ?? 0) + 1)
+  }
+  const bodyFontSize = [...sizeCounts.entries()]
+    .sort(([leftSize, leftCount], [rightSize, rightCount]) =>
+      rightCount - leftCount || leftSize - rightSize)
+    .at(0)?.[0] ?? 12
+  const isHeading = (line: VisualLine) =>
+    !line.text.includes('\t') && line.fontSize >= bodyFontSize * 1.15
+  const headingSizes = [...new Set(
+    visibleLines.filter(isHeading).map(line => Math.round(line.fontSize * 2) / 2),
+  )].sort((left, right) => right - left)
+
+  const blocks: TextBlock[] = []
+  let openParagraph: string[] | undefined
+  let openTable: string[][] | undefined
+  const flush = () => {
+    if (openParagraph) {
+      blocks.push({ kind: 'paragraph', lines: openParagraph })
+      openParagraph = undefined
+    }
+    if (openTable) {
+      blocks.push({ kind: 'table', rows: openTable })
+      openTable = undefined
+    }
+  }
+
+  for (const lines of lineBlocks) {
+    for (const line of lines) {
+      if (line.text.length === 0) {
+        continue
+      }
+      if (line.text.includes('\t')) {
+        if (openParagraph) {
+          flush()
+        }
+        openTable ??= []
+        openTable.push(line.text.split('\t'))
+        continue
+      }
+      if (isHeading(line)) {
+        flush()
+        const tier = headingSizes.indexOf(Math.round(line.fontSize * 2) / 2)
+        blocks.push({ kind: 'heading', level: Math.min(tier + 1, 6), text: line.text })
+        continue
+      }
+      if (openTable) {
+        flush()
+      }
+      openParagraph ??= []
+      openParagraph.push(line.text)
+    }
+    flush()
+  }
+
+  return blocks
+}
+
+// Per orientation group, the blocks of rendered lines in reading order.
+function pageLineBlocks(
+  items: VisualOrderItem[],
+  viewportTransform: number[],
+): VisualLine[][][] {
   const [viewportA, viewportB, viewportC, viewportD, viewportX, viewportY]
     = viewportTransform as [number, number, number, number, number, number]
   const orientedItems = items
@@ -78,12 +176,8 @@ export function textInVisualOrder(
           y: -advanceUnitY * pageX + advanceUnitX * pageY,
         })))
         .sort((left, right) => left.y - right.y || left.x - right.x)
-      return readingBlocks(positionedItems)
-        .map(block => renderBlock(block))
-        .join('\n')
+      return readingBlocks(positionedItems).map(block => blockLines(block))
     })
-    .filter(text => text.length > 0)
-    .join('\n')
 }
 
 function attachInlineGlyphs(items: PositionedItem[]): PositionedItem[] {
@@ -347,7 +441,7 @@ function distinctBaselines(items: PositionedItem[]): number[] {
   return baselines
 }
 
-function renderBlock(blockItems: PositionedItem[]): string {
+function blockLines(blockItems: PositionedItem[]): VisualLine[] {
   // Embedded font metrics can overstate run widths, so repeated x positions
   // are stronger evidence of a table boundary than the measured text gap.
   const columnBaselines = new Map<number, Set<number>>()
@@ -361,8 +455,7 @@ function renderBlock(blockItems: PositionedItem[]): string {
   }
 
   return groupIntoLines(blockItems)
-    .map(line => renderLine(line, columnBaselines))
-    .join('\n')
+    .map(line => ({ text: renderLine(line, columnBaselines), fontSize: line.fontSize }))
 }
 
 function groupIntoLines(positionedItems: PositionedItem[]): Line[] {
