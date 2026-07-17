@@ -146,6 +146,15 @@ describe('textInVisualOrder', () => {
     expect(text.replace(/\s+/g, ' ')).toBe(`Example address ${postalCode}- ${distance}`)
   })
 
+  it('separates a leading footnote marker from its note text', () => {
+    const text = textInVisualOrder([
+      run('1', { x: 90.06, y: 30, width: 2.52, fontSize: 4.97 }),
+      run('Seasonally Adjusted Annual Rate', { x: 92.58, y: 27, width: 104, fontSize: 7.96 }),
+    ], pageViewport)
+
+    expect(text).toBe('1 Seasonally Adjusted Annual Rate')
+  })
+
   it('keeps a superscript run inline with its anchor text', () => {
     const text = textInVisualOrder([
       run('E=mc', { x: 10, y: 20, width: 22 }),

@@ -420,6 +420,7 @@ function renderLine(line: Line, columnBaselines: Map<number, Set<number>>): stri
   const runs: RenderedRun[] = []
   let rightEdge: number | undefined
   let previousFontSize: number | undefined
+  let previousY: number | undefined
   let previousText: string | undefined
   let previousHasEOL = false
   let pendingWhitespace = false
@@ -457,9 +458,17 @@ function renderLine(line: Line, columnBaselines: Map<number, Set<number>>): stri
     // intra-word (small caps, kerned splits), however well it aligns.
     const overlapsBeyondKerning = gap < -seamFontSize * 0.1
     const startsAlignedColumn = overlapsBeyondKerning && alignedBaselines.size >= 2
+    // A line that opens with a small raised run is a footnote marker
+    // defining the note, not a superscript continuing a word.
+    const leadingFootnoteMarker = runs.length === 1
+      && previousFontSize !== undefined
+      && previousY !== undefined
+      && previousFontSize <= positionedItem.fontSize * 0.8
+      && previousY < positionedItem.y - positionedItem.fontSize * 0.2
+
     const wantsSeparator = runs.length > 0
       && !/[\t ]$/.test(previousText ?? '')
-      && (pendingWhitespace || previousHasEOL || followsWordGap || startsAlignedColumn)
+      && (pendingWhitespace || previousHasEOL || followsWordGap || startsAlignedColumn || leadingFootnoteMarker)
 
     runs.push({
       text: itemText,
@@ -471,6 +480,7 @@ function renderLine(line: Line, columnBaselines: Map<number, Set<number>>): stri
     previousHasEOL = positionedItem.item.hasEOL ?? false
     rightEdge = positionedItem.x + positionedItem.width
     previousFontSize = positionedItem.fontSize
+    previousY = positionedItem.y
   }
 
   return joinRuns(runs).trimEnd()

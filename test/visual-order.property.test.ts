@@ -77,6 +77,22 @@ function headingBlock(random: () => number, topY: number): GeneratedBlock {
   return { items, text: words.join(' '), bottom: topY }
 }
 
+// A footnote line opens with a small raised marker abutting the note text.
+function footnoteBlock(random: () => number, topY: number): GeneratedBlock {
+  const marker = String(1 + Math.floor(random() * 9))
+  const markerSize = 6
+  const words = Array.from({ length: 2 + Math.floor(random() * 4) }, () => randomWord(random))
+  const items: VisualOrderItem[] = [
+    textRun(marker, 57, topY + 3, { size: markerSize }),
+  ]
+  let x = 57 + wordWidth(marker, markerSize)
+  for (const word of words) {
+    items.push(textRun(word, x, topY))
+    x += wordWidth(word, FONT_SIZE) + WORD_GAP
+  }
+  return { items, text: `${marker} ${words.join(' ')}`, bottom: topY }
+}
+
 function paragraphBlock(random: () => number, topY: number): GeneratedBlock {
   const items: VisualOrderItem[] = []
   const lines: string[] = []
@@ -226,15 +242,17 @@ function generatePage(seed: number): { items: VisualOrderItem[], expected: strin
   const blockCount = 2 + Math.floor(random() * 3)
   for (let blockIndex = 0; blockIndex < blockCount; blockIndex++) {
     const roll = random()
-    const block = roll < 0.18
+    const block = roll < 0.15
       ? headingBlock(random, topY)
-      : roll < 0.45
+      : roll < 0.4
         ? paragraphBlock(random, topY)
-        : roll < 0.65
+        : roll < 0.58
           ? tableBlock(random, topY)
-          : roll < 0.78
+          : roll < 0.7
             ? overlappingTableBlock(random, topY)
-            : columnsBlock(random, topY)
+            : roll < 0.8
+              ? footnoteBlock(random, topY)
+              : columnsBlock(random, topY)
     blocks.push(block)
     topY = block.bottom - BLOCK_GAP
   }
