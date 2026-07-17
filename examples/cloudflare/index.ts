@@ -1,5 +1,5 @@
 /* eslint-disable no-console -- Worker observability uses structured stdout logs. */
-import { extractTextPages } from 'punpdf'
+import { extractTextPages } from '@mewhhaha/punpdf'
 
 const MAX_PDF_BYTES = 16 * 1024 * 1024
 const DOCUMENT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i

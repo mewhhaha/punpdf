@@ -59,7 +59,7 @@ importers:
 
   examples/cloudflare:
     dependencies:
-      punpdf:
+      '@mewhhaha/punpdf':
         specifier: workspace:*
         version: link:../..
     devDependencies:

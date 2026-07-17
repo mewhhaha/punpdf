@@ -10,7 +10,7 @@
     "types": "wrangler types"
   },
   "dependencies": {
-    "punpdf": "workspace:*"
+    "@mewhhaha/punpdf": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^6.0.2",
