@@ -1,7 +1,7 @@
 {
-  "name": "punpdf",
+  "name": "@mewhhaha/punpdf",
   "type": "module",
-  "version": "1.6.2",
+  "version": "0.1.0",
   "packageManager": "pnpm@10.33.0",
   "description": "Accuracy-focused PDF extraction and rendering built from unpdf",
   "author": "Johann Schopplich <hello@johannschopplich.com>",
