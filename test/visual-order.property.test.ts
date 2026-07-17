@@ -2,9 +2,12 @@ import type { VisualOrderItem } from '../src/visual-order'
 import { describe, expect, it } from 'vitest'
 import { textInVisualOrder } from '../src/visual-order'
 
-const pageViewport = [1, 0, 0, -1, 0, 842]
+const PAGE_WIDTH = 595
+const PAGE_HEIGHT = 842
+const pageViewport = [1, 0, 0, -1, 0, PAGE_HEIGHT]
 
 const FONT_SIZE = 10
+const HEADING_SIZE = 14
 const LINE_ADVANCE = 14
 const WORD_GAP = 3
 // Keeps generated blocks far enough apart that block segmentation must
@@ -43,13 +46,18 @@ function randomWord(random: () => number): string {
   return word
 }
 
-function textRun(str: string, x: number, y: number, dir = 'ltr'): VisualOrderItem {
-  return {
-    str,
-    transform: [FONT_SIZE, 0, 0, FONT_SIZE, x, y],
-    width: str.length * (FONT_SIZE / 2),
-    dir,
-  }
+function wordWidth(word: string, size: number): number {
+  return word.length * (size / 2)
+}
+
+function textRun(
+  str: string,
+  x: number,
+  y: number,
+  options: { size?: number, dir?: string } = {},
+): VisualOrderItem {
+  const { size = FONT_SIZE, dir = 'ltr' } = options
+  return { str, transform: [size, 0, 0, size, x, y], width: wordWidth(str, size), dir }
 }
 
 interface GeneratedBlock {
@@ -58,21 +66,66 @@ interface GeneratedBlock {
   bottom: number
 }
 
+function headingBlock(random: () => number, topY: number): GeneratedBlock {
+  const words = Array.from({ length: 1 + Math.floor(random() * 3) }, () => randomWord(random))
+  const items: VisualOrderItem[] = []
+  let x = 57
+  for (const word of words) {
+    items.push(textRun(word, x, topY, { size: HEADING_SIZE }))
+    x += wordWidth(word, HEADING_SIZE) + 4
+  }
+  return { items, text: words.join(' '), bottom: topY }
+}
+
 function paragraphBlock(random: () => number, topY: number): GeneratedBlock {
   const items: VisualOrderItem[] = []
   const lines: string[] = []
+  const lineEnds: Array<{ lineIndex: number, x: number, y: number }> = []
   const lineCount = 1 + Math.floor(random() * 4)
 
   for (let lineIndex = 0; lineIndex < lineCount; lineIndex++) {
     const y = topY - lineIndex * LINE_ADVANCE
+    const indent = [0, 20, 45][Math.floor(random() * 3)]!
     const words = Array.from({ length: 1 + Math.floor(random() * 5) }, () => randomWord(random))
-    const rightToLeft = random() < 0.25
-    let x = 57
-    for (const word of rightToLeft ? [...words].reverse() : words) {
-      items.push(textRun(word, x, y, rightToLeft ? 'rtl' : 'ltr'))
-      x += word.length * (FONT_SIZE / 2) + WORD_GAP
+    const rightToLeft = random() < 0.2
+
+    let x = 57 + indent
+    const placed = rightToLeft ? [...words].reverse() : words
+    for (const [wordIndex, word] of placed.entries()) {
+      items.push(textRun(word, x, y, { dir: rightToLeft ? 'rtl' : 'ltr' }))
+      x += wordWidth(word, FONT_SIZE) + WORD_GAP
+      // Sometimes the producer emits the inter-word space as its own run.
+      if (!rightToLeft && wordIndex < placed.length - 1 && random() < 0.2) {
+        items.push(textRun(' ', x - WORD_GAP, y))
+      }
     }
     lines.push(words.join(' '))
+    if (!rightToLeft) {
+      lineEnds.push({ lineIndex, x: x - WORD_GAP, y })
+    }
+  }
+
+  // A raised smaller run abutting a word must stay joined to it. Skipped
+  // when other lines start within the column-evidence window of its x, so
+  // the expected text never depends on coincidental alignment.
+  if (lineEnds.length > 0 && random() < 0.35) {
+    const target = lineEnds[Math.floor(random() * lineEnds.length)]!
+    const superscript = randomWord(random)
+    const supBucket = Math.round(target.x * 2)
+    const conflictingBaselines = new Set<number>()
+    for (const item of items) {
+      if (item.str.trim().length === 0) {
+        continue
+      }
+      const [, , , , x, y] = item.transform
+      if (Math.abs(Math.round(x * 2) - supBucket) <= 2) {
+        conflictingBaselines.add(y)
+      }
+    }
+    if (conflictingBaselines.size < 2) {
+      items.push(textRun(superscript, target.x, target.y + 3.5, { size: 7 }))
+      lines[target.lineIndex] += superscript
+    }
   }
 
   return { items, text: lines.join('\n'), bottom: topY - (lineCount - 1) * LINE_ADVANCE }
@@ -80,15 +133,31 @@ function paragraphBlock(random: () => number, topY: number): GeneratedBlock {
 
 function tableBlock(random: () => number, topY: number): GeneratedBlock {
   const columnStarts = [57, 260, 420].slice(0, 2 + Math.floor(random() * 2))
+  const rightAlignLastColumn = random() < 0.4
+  const lastColumnRightEdge = columnStarts.at(-1)! + 120
   const rowCount = 2 + Math.floor(random() * 4)
   const items: VisualOrderItem[] = []
   const rows: string[] = []
 
   for (let rowIndex = 0; rowIndex < rowCount; rowIndex++) {
     const y = topY - rowIndex * LINE_ADVANCE
-    const cells = columnStarts.map(() => randomWord(random))
-    for (const [columnIndex, x] of columnStarts.entries()) {
-      items.push(textRun(cells[columnIndex]!, x, y))
+    const cells: string[] = []
+    for (const [columnIndex, columnStart] of columnStarts.entries()) {
+      const words = Array.from(
+        { length: random() < 0.4 ? 2 : 1 },
+        () => randomWord(random),
+      )
+      const cellWidth = words.reduce(
+        (total, word) => total + wordWidth(word, FONT_SIZE),
+        (words.length - 1) * WORD_GAP,
+      )
+      const lastColumn = columnIndex === columnStarts.length - 1
+      let x = lastColumn && rightAlignLastColumn ? lastColumnRightEdge - cellWidth : columnStart
+      for (const word of words) {
+        items.push(textRun(word, x, y))
+        x += wordWidth(word, FONT_SIZE) + WORD_GAP
+      }
+      cells.push(words.join(' '))
     }
     rows.push(cells.join('\t'))
   }
@@ -97,30 +166,36 @@ function tableBlock(random: () => number, topY: number): GeneratedBlock {
 }
 
 function columnsBlock(random: () => number, topY: number): GeneratedBlock {
-  const prose = (startX: number, startY: number) => {
+  const columnStarts = random() < 0.4 ? [57, 250, 443] : [57, 320]
+  const maxWordsPerLine = columnStarts.length === 3 ? 3 : 4
+  // Offset baselines mark the sides as facing prose columns, not table rows.
+  const baselineOffsets = [0, 7, 3]
+
+  const columns = columnStarts.map((startX, columnIndex) => {
     const lineCount = 4 + Math.floor(random() * 3)
     const items: VisualOrderItem[] = []
     const lines: string[] = []
+    const columnTop = topY - baselineOffsets[columnIndex]!
     for (let lineIndex = 0; lineIndex < lineCount; lineIndex++) {
-      const y = startY - lineIndex * LINE_ADVANCE
-      const words = Array.from({ length: 1 + Math.floor(random() * 4) }, () => randomWord(random))
+      const y = columnTop - lineIndex * LINE_ADVANCE
+      const words = Array.from(
+        { length: 1 + Math.floor(random() * maxWordsPerLine) },
+        () => randomWord(random),
+      )
       let x = startX
       for (const word of words) {
         items.push(textRun(word, x, y))
-        x += word.length * (FONT_SIZE / 2) + WORD_GAP
+        x += wordWidth(word, FONT_SIZE) + WORD_GAP
       }
       lines.push(words.join(' '))
     }
-    return { items, lines, bottom: startY - (lineCount - 1) * LINE_ADVANCE }
-  }
+    return { items, lines, bottom: columnTop - (lineCount - 1) * LINE_ADVANCE }
+  })
 
-  // Offset baselines mark the sides as facing prose columns, not table rows.
-  const left = prose(57, topY)
-  const right = prose(320, topY - 7)
   return {
-    items: [...left.items, ...right.items],
-    text: [...left.lines, ...right.lines].join('\n'),
-    bottom: Math.min(left.bottom, right.bottom),
+    items: columns.flatMap(column => column.items),
+    text: columns.flatMap(column => column.lines).join('\n'),
+    bottom: Math.min(...columns.map(column => column.bottom)),
   }
 }
 
@@ -129,14 +204,16 @@ function generatePage(seed: number): { items: VisualOrderItem[], expected: strin
   const blocks: GeneratedBlock[] = []
   let topY = 800
 
-  const blockCount = 1 + Math.floor(random() * 3)
+  const blockCount = 2 + Math.floor(random() * 3)
   for (let blockIndex = 0; blockIndex < blockCount; blockIndex++) {
     const roll = random()
-    const block = roll < 1 / 3
-      ? paragraphBlock(random, topY)
-      : roll < 2 / 3
-        ? tableBlock(random, topY)
-        : columnsBlock(random, topY)
+    const block = roll < 0.2
+      ? headingBlock(random, topY)
+      : roll < 0.5
+        ? paragraphBlock(random, topY)
+        : roll < 0.75
+          ? tableBlock(random, topY)
+          : columnsBlock(random, topY)
     blocks.push(block)
     topY = block.bottom - BLOCK_GAP
   }
@@ -146,6 +223,37 @@ function generatePage(seed: number): { items: VisualOrderItem[], expected: strin
     expected: blocks.map(block => block.text).join('\n'),
   }
 }
+
+// Row-vector convention, matching how the viewport is applied to items.
+function multiplyMatrices(m: number[], n: number[]): number[] {
+  const [ma, mb, mc, md, me, mf] = m as [number, number, number, number, number, number]
+  const [na, nb, nc, nd, ne, nf] = n as [number, number, number, number, number, number]
+  return [
+    ma * na + mb * nc,
+    ma * nb + mb * nd,
+    mc * na + md * nc,
+    mc * nb + md * nd,
+    me * na + mf * nc + ne,
+    me * nb + mf * nd + nf,
+  ]
+}
+
+function invertMatrix(m: number[]): number[] {
+  const [a, b, c, d, e, f] = m as [number, number, number, number, number, number]
+  const determinant = a * d - b * c
+  const ia = d / determinant
+  const ib = -b / determinant
+  const ic = -c / determinant
+  const id = a / determinant
+  return [ia, ib, ic, id, -(e * ia + f * ic), -(e * ib + f * id)]
+}
+
+// PDF.js viewport transforms for each page rotation at scale 1.
+const rotatedViewports = [
+  { rotation: 90, viewport: [0, 1, 1, 0, 0, 0] },
+  { rotation: 180, viewport: [-1, 0, 0, 1, PAGE_WIDTH, 0] },
+  { rotation: 270, viewport: [0, -1, -1, 0, PAGE_HEIGHT, PAGE_WIDTH] },
+]
 
 function chaosCoordinate(random: () => number): number {
   const roll = random()
@@ -184,9 +292,26 @@ const chaosViewports = [
 
 describe('textInVisualOrder properties', () => {
   it('reconstructs shuffled synthetic pages across seeds', () => {
-    for (let seed = 1; seed <= 60; seed++) {
+    for (let seed = 1; seed <= 100; seed++) {
       const { items, expected } = generatePage(seed)
       expect(textInVisualOrder(items, pageViewport), `seed ${seed}`).toBe(expected)
+    }
+  })
+
+  it('reads the same text at every page rotation', () => {
+    for (let seed = 1; seed <= 100; seed++) {
+      const { items, expected } = generatePage(seed)
+      for (const { rotation, viewport } of rotatedViewports) {
+        const reauthored = items.map(item => ({
+          ...item,
+          transform: multiplyMatrices(
+            item.transform,
+            multiplyMatrices(pageViewport, invertMatrix(viewport)),
+          ),
+        }))
+        expect(textInVisualOrder(reauthored, viewport), `seed ${seed} rotation ${rotation}`)
+          .toBe(expected)
+      }
     }
   })
 

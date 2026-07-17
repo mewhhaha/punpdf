@@ -8,14 +8,18 @@ const fixturesDir = join(dirname(fileURLToPath(import.meta.url)), '../test/fixtu
 
 // Text must stay free of the characters ( ) \ that would need escaping in
 // PDF string literals.
-function pdfFromRuns(runs) {
+function pdfFromRuns(runs, { mediaBox = [0, 0, 595, 842], rotate = 0 } = {}) {
   const content = runs
-    .map(({ text, x, y, size }) => `BT /F1 ${size} Tf 1 0 0 1 ${x} ${y} Tm (${text}) Tj ET`)
+    .map(({ text, x, y, size, tm }) => {
+      const matrix = tm ?? [1, 0, 0, 1, x, y]
+      return `BT /F1 ${size} Tf ${matrix.join(' ')} Tm (${text}) Tj ET`
+    })
     .join('\n')
+  const rotation = rotate ? ` /Rotate ${rotate}` : ''
   const objects = [
     '<< /Type /Catalog /Pages 2 0 R >>',
     '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
-    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>',
+    `<< /Type /Page /Parent 2 0 R /MediaBox [${mediaBox.join(' ')}]${rotation} /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>`,
     `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
     '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
   ]
@@ -82,5 +86,93 @@ for (const [filename, runs] of [
   ['superscript.pdf', superscript],
 ]) {
   writeFileSync(join(fixturesDir, filename), pdfFromRuns(runs))
+  console.log(`wrote test/fixtures/${filename}`)
+}
+
+// Row-vector convention: apply m, then n.
+function multiply(m, n) {
+  return [
+    m[0] * n[0] + m[1] * n[2],
+    m[0] * n[1] + m[1] * n[3],
+    m[2] * n[0] + m[3] * n[2],
+    m[2] * n[1] + m[3] * n[3],
+    m[4] * n[0] + m[5] * n[2] + n[4],
+    m[4] * n[1] + m[5] * n[3] + n[5],
+  ]
+}
+
+function invert(m) {
+  const determinant = m[0] * m[3] - m[1] * m[2]
+  const a = m[3] / determinant
+  const b = -m[1] / determinant
+  const c = -m[2] / determinant
+  const d = m[0] / determinant
+  return [a, b, c, d, -(m[4] * a + m[5] * c), -(m[4] * b + m[5] * d)]
+}
+
+// PDF.js viewport transform for a page at scale 1 (display origin top-left).
+function viewportFor(rotate, [, , width, height]) {
+  switch (rotate) {
+    case 90:
+      return [0, 1, 1, 0, 0, 0]
+    case 180:
+      return [-1, 0, 0, 1, width, 0]
+    case 270:
+      return [0, -1, -1, 0, height, width]
+    default:
+      return [1, 0, 0, -1, 0, height]
+  }
+}
+
+// The mixed-layout memo is laid out in display coordinates (origin top-left,
+// y growing downward) on an 842x595 landscape page, then authored through
+// the inverse viewport of each rotation so every rotated variant renders
+// identically and must read identically.
+const memoLeftColumn = [
+  'Alpha reports strong',
+  'engagement in the north',
+  'while retention holds',
+  'above expectations.',
+]
+const memoRightColumn = [
+  'Beta launches next',
+  'quarter with pricing',
+  'still under internal',
+  'review by finance.',
+]
+const memoAmounts = [['North', '120.00'], ['South', '98.50'], ['East', '210.75']]
+const memo = [
+  { text: 'Quarterly Review', x: 57, y: 60, size: 16 },
+  { text: 'Revenue grew steadily across all regions', x: 57, y: 100, size: 10 },
+  { text: 'with costs held flat for the quarter.', x: 57, y: 114, size: 10 },
+  ...memoAmounts.flatMap(([region, amount], row) => [
+    { text: region, x: 57, y: 160 + row * 16, size: 10 },
+    { text: amount, x: 400 - amount.length * 5, y: 160 + row * 16, size: 10 },
+  ]),
+  ...memoLeftColumn.map((text, line) => ({ text, x: 57, y: 240 + line * 14, size: 10 })),
+  ...memoRightColumn.map((text, line) => ({ text, x: 450, y: 247 + line * 14, size: 10 })),
+  { text: 'Page 1 of 1', x: 700, y: 560, size: 8 },
+]
+
+for (const rotate of [0, 90, 180, 270]) {
+  const mediaBox = rotate % 180 === 0 ? [0, 0, 842, 595] : [0, 0, 595, 842]
+  const inverseViewport = invert(viewportFor(rotate, mediaBox))
+  const runs = memo.map(({ text, x, y, size }) => {
+    const authored = multiply([size, 0, 0, -size, x, y], inverseViewport)
+    return {
+      text,
+      size,
+      tm: [
+        authored[0] / size,
+        authored[1] / size,
+        authored[2] / size,
+        authored[3] / size,
+        authored[4],
+        authored[5],
+      ].map(value => Math.round(value * 10000) / 10000),
+    }
+  })
+  const filename = rotate === 0 ? 'mixed-layout.pdf' : `mixed-layout-rotate${rotate}.pdf`
+  writeFileSync(join(fixturesDir, filename), pdfFromRuns(runs, { mediaBox, rotate }))
   console.log(`wrote test/fixtures/${filename}`)
 }
