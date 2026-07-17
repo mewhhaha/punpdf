@@ -1,0 +1,40 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 625 >>
+stream
+BT /F1 16 Tf 1 0 0 1 57 780 Tm (Two Column Sample) Tj ET
+BT /F1 10 Tf 1 0 0 1 57 740 Tm (The left column begins the story) Tj ET
+BT /F1 10 Tf 1 0 0 1 57 726 Tm (and continues along its own flow) Tj ET
+BT /F1 10 Tf 1 0 0 1 57 712 Tm (of narrow measured lines that fill) Tj ET
+BT /F1 10 Tf 1 0 0 1 57 698 Tm (the first of the two columns.) Tj ET
+BT /F1 10 Tf 1 0 0 1 311 733 Tm (The right column tells another) Tj ET
+BT /F1 10 Tf 1 0 0 1 311 719 Tm (story entirely and must not be) Tj ET
+BT /F1 10 Tf 1 0 0 1 311 705 Tm (interleaved with the left column) Tj ET
+BT /F1 10 Tf 1 0 0 1 311 691 Tm (when read in visual order.) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000000917 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+987
+%%EOF

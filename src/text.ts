@@ -1,5 +1,6 @@
 import type { DocumentInitParameters, PDFDocumentProxy, TextItem, TextStyle } from 'pdfjs-dist/types/src/display/api'
 import { getDocumentProxy, isPDFDocumentProxy } from './utils'
+import { textInVisualOrder } from './visual-order'
 
 export interface StructuredTextItem {
   /** Text content. */
@@ -90,8 +91,21 @@ export async function extractText(
 
   return {
     totalPages: pdf.numPages,
-    text: mergePages ? texts.join('\n').replace(/\s+/g, ' ') : texts,
+    text: mergePages ? mergePageTexts(texts, readingOrder) : texts,
   }
+}
+
+function mergePageTexts(
+  texts: string[],
+  readingOrder: NonNullable<ExtractTextOptions['readingOrder']>,
+) {
+  // Visual order infers the line structure; collapsing whitespace would
+  // destroy it again.
+  if (readingOrder === 'visual') {
+    return texts.join('\n\n')
+  }
+
+  return texts.join('\n').replace(/\s+/g, ' ')
 }
 
 async function getPageText(
@@ -110,104 +124,4 @@ async function getPageText(
   }
 
   return textInVisualOrder(items, page.getViewport({ scale: 1 }).transform)
-}
-
-/** The subset of a PDF.js text item that positions its text on the page. */
-export type VisualOrderItem = Pick<TextItem, 'str' | 'transform' | 'width'>
-
-/**
- * Assembles page text in visual reading order: top to bottom, left to right,
- * as positioned by the given viewport transform. Groups items into lines by
- * baseline and infers spaces between separate text runs.
- */
-export function textInVisualOrder(
-  items: VisualOrderItem[],
-  viewportTransform: number[],
-): string {
-  const [viewportA, viewportB, viewportC, viewportD, viewportX, viewportY]
-    = viewportTransform as [number, number, number, number, number, number]
-  const positionedItems = items
-    .filter(item => item.str.length > 0)
-    .map((item) => {
-      const [_a, _b, c, d, itemX, itemY] = item.transform
-      const transformedC = viewportA * c + viewportC * d
-      const transformedD = viewportB * c + viewportD * d
-      const x = viewportA * itemX + viewportC * itemY + viewportX
-      const y = viewportB * itemX + viewportD * itemY + viewportY
-      return { item, fontSize: Math.hypot(transformedC, transformedD), x, y }
-    })
-    .sort((left, right) => left.y - right.y || left.x - right.x)
-
-  // Embedded font metrics can overstate run widths, so repeated x positions
-  // are stronger evidence of a table boundary than the measured text gap.
-  const columnBaselines = new Map<number, Set<number>>()
-  for (const positionedItem of positionedItems) {
-    if (!/^\s*$/.test(positionedItem.item.str)) {
-      const columnBucket = Math.round(positionedItem.x * 2)
-      const baselines = columnBaselines.get(columnBucket) ?? new Set<number>()
-      baselines.add(Math.round(positionedItem.y * 2))
-      columnBaselines.set(columnBucket, baselines)
-    }
-  }
-
-  const lines: Array<{
-    baseline: number
-    fontSize: number
-    items: typeof positionedItems
-  }> = []
-
-  for (const positionedItem of positionedItems) {
-    const line = lines.at(-1)
-    const baselineTolerance = line
-      ? Math.max(0.5, Math.min(line.fontSize, positionedItem.fontSize) * 0.25)
-      : 0
-
-    if (!line || Math.abs(line.baseline - positionedItem.y) > baselineTolerance) {
-      lines.push({
-        baseline: positionedItem.y,
-        fontSize: positionedItem.fontSize,
-        items: [positionedItem],
-      })
-      continue
-    }
-
-    line.items.push(positionedItem)
-    line.fontSize = Math.max(line.fontSize, positionedItem.fontSize)
-  }
-
-  return lines
-    .map((line) => {
-      line.items.sort((left, right) => left.x - right.x)
-
-      let rightEdge: number | undefined
-      let text = ''
-      for (const positionedItem of line.items) {
-        const itemText = positionedItem.item.str
-        if (/^\s+$/.test(itemText)) {
-          if (text && !text.endsWith(' '))
-            text += ' '
-          continue
-        }
-
-        const gap = rightEdge === undefined ? 0 : positionedItem.x - rightEdge
-        const columnBucket = Math.round(positionedItem.x * 2)
-        const columnTolerance = Math.ceil(positionedItem.fontSize)
-        const alignedBaselines = new Set<number>()
-        for (let nearbyBucket = columnBucket - columnTolerance; nearbyBucket <= columnBucket + columnTolerance; nearbyBucket++) {
-          for (const baseline of columnBaselines.get(nearbyBucket) ?? [])
-            alignedBaselines.add(baseline)
-        }
-
-        const followsWordGap = gap > positionedItem.fontSize * 0.1
-        const startsAlignedColumn = alignedBaselines.size >= 3
-        if (text && !text.endsWith(' ') && (followsWordGap || startsAlignedColumn))
-          text += ' '
-
-        text += itemText
-        rightEdge = positionedItem.x + positionedItem.item.width
-      }
-
-      return text.trimEnd()
-    })
-    .join('\n')
 }
