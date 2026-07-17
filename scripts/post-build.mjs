@@ -18,7 +18,7 @@ for (const filename of ['dist/index.cjs', 'dist/index.mjs']) {
   const modulePath = path.resolve(rootDir, filename)
   const content = await fsp.readFile(modulePath, 'utf8')
   const relativeImport = content.replace(
-    /(['"])punpdf\/pdfjs\1/g,
+    /(['"])@mewhhaha\/punpdf\/pdfjs\1/g,
     '$1./pdfjs.mjs$1',
   )
 

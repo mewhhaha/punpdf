@@ -7,7 +7,7 @@ import { resolvePDFJSImport } from './utils'
  *
  * @example
  * // Use the official PDF.js build (make sure to install it first)
- * import { definePDFJSModule } from 'punpdf'
+ * import { definePDFJSModule } from '@mewhhaha/punpdf'
  *
  * await definePDFJSModule(() => import('pdfjs-dist'))
  */
