@@ -216,6 +216,13 @@ function looksLikeFacingColumns(
     return false
   }
 
+  const alignedBaselineCount = leftBaselines
+    .filter(baseline => rightBaselines.some(other => Math.abs(baseline - other) <= 1))
+    .length
+  if (alignedBaselineCount >= 3) {
+    return false
+  }
+
   const unalignedShare = (own: number[], facing: number[]) =>
     own.filter(baseline => !facing.some(other => Math.abs(baseline - other) <= 1)).length
     / own.length

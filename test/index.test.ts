@@ -94,6 +94,7 @@ describe('punpdf', () => {
     'pdflatex-image.pdf',
     'two-column.pdf',
     'table.pdf',
+    'w3c-table.pdf',
     'superscript.pdf',
     'mixed-layout.pdf',
     'mixed-layout-rotate90.pdf',
@@ -143,6 +144,15 @@ describe('punpdf', () => {
       + 'Framing\t5\t1200.00\n'
       + 'Painting\t3\t300.00',
     )
+  })
+
+  it('keeps W3C table results on the same line as their row labels', async () => {
+    const { text } = await extractText(await getPDF('w3c-table.pdf'), {
+      readingOrder: 'visual',
+    })
+
+    expect(text[0]).toContain('Blind\t5\t1\t4\t34.5%, n=1\t1199 sec, n=1')
+    expect(text[0]).toContain('Mobility\t3\t3\t0\t95.4%, n=3\t1416 sec, n=3')
   })
 
   it('keeps superscripts and subscripts inline in visual reading order', async () => {
