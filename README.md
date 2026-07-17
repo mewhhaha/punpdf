@@ -18,12 +18,20 @@ Ships with a serverless build of Mozilla's [PDF.js](https://github.com/mozilla/p
 ## Installation
 
 ```bash
-# pnpm
+# JSR with Deno
+deno add jsr:@mewhhaha/punpdf
+
+# JSR with pnpm
+pnpm add jsr:@mewhhaha/punpdf
+
+# GitHub with pnpm
 pnpm add github:mewhhaha/punpdf
 
-# npm
+# GitHub with npm
 npm install github:mewhhaha/punpdf
 ```
+
+Use `@mewhhaha/punpdf` in imports when installing from JSR. The examples below use the npm package name, `punpdf`.
 
 ## Usage
 

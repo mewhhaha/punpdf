@@ -14,6 +14,25 @@ for (const filename of targets) {
   await relativeTypePaths(filename)
 }
 
+for (const filename of ['dist/index.cjs', 'dist/index.mjs']) {
+  const modulePath = path.resolve(rootDir, filename)
+  const content = await fsp.readFile(modulePath, 'utf8')
+  const relativeImport = content.replace(
+    /(['"])punpdf\/pdfjs\1/g,
+    '$1./pdfjs.mjs$1',
+  )
+
+  if (relativeImport === content) {
+    throw new Error(`${filename} does not import the serverless PDF.js bundle`)
+  }
+
+  const jsrTypeDirective = filename.endsWith('.mjs')
+    ? '/* @ts-self-types="./index.d.ts" */\n'
+    : ''
+
+  await fsp.writeFile(modulePath, `${jsrTypeDirective}${relativeImport}`, 'utf8')
+}
+
 /**
  * @param {string} filename
  */

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://jsr.io/schema/config-file.v1.json",
+  "name": "@mewhhaha/punpdf",
+  "version": "1.6.2",
+  "exports": {
+    ".": "./dist/index.mjs",
+    "./pdfjs": "./dist/pdfjs.mjs"
+  },
+  "publish": {
+    "include": [
+      "LICENSE",
+      "README.md",
+      "package.json",
+      "dist/index.cjs",
+      "dist/index.d.cts",
+      "dist/index.d.mts",
+      "dist/index.d.ts",
+      "dist/index.mjs",
+      "dist/pdfjs.d.mts",
+      "dist/pdfjs.d.ts",
+      "dist/pdfjs.mjs",
+      "dist/types/**/*.d.ts"
+    ]
+  }
+}
