@@ -1,13 +1,16 @@
-# unpdf
+# punpdf
+
+> [!IMPORTANT]
+> **punpdf is built from [unpdf](https://github.com/unjs/unpdf) by UnJS.** This fork retains unpdf's MIT-licensed foundation and full Git history while focusing on text extraction accuracy, visual reading order, rotated pages, and table reconstruction.
 
 Utilities for PDF extraction and rendering across all JavaScript runtimes – Node.js, Deno, Bun, the browser, and serverless environments like Cloudflare Workers. Especially useful for AI applications that need to summarize or analyze PDF documents.
 
-Ships with a serverless build of Mozilla's [PDF.js](https://github.com/mozilla/pdf.js), optimized for edge environments. If you're coming from [`pdf-parse`](https://www.npmjs.com/package/pdf-parse), `unpdf` is a modern, actively maintained alternative with broader runtime support.
+Ships with a serverless build of Mozilla's [PDF.js](https://github.com/mozilla/pdf.js), optimized for edge environments. If you're coming from [`pdf-parse`](https://www.npmjs.com/package/pdf-parse), `punpdf` provides a modern alternative with broader runtime support.
 
 ## Features
 
 - 🏗️ Works in Node.js, browser and serverless environments
-- 🪭 Includes serverless build of PDF.js ([`unpdf/pdfjs`](./package.json))
+- 🪭 Includes serverless build of PDF.js ([`punpdf/pdfjs`](./package.json))
 - 💬 Extract [text](#extract-text-from-pdf), [links](#extractlinks), and [images](#extractimages) from PDF files
 - 🧠 Perfect for AI applications and PDF summarization
 - 🧱 Opt-in to official or legacy PDF.js build
@@ -16,10 +19,10 @@ Ships with a serverless build of Mozilla's [PDF.js](https://github.com/mozilla/p
 
 ```bash
 # pnpm
-pnpm add unpdf
+pnpm add github:mewhhaha/punpdf
 
 # npm
-npm install unpdf
+npm install github:mewhhaha/punpdf
 ```
 
 ## Usage
@@ -27,7 +30,7 @@ npm install unpdf
 ### Extract Text From PDF
 
 ```ts
-import { extractText, getDocumentProxy } from 'unpdf'
+import { extractText, getDocumentProxy } from 'punpdf'
 
 // Fetch a PDF from the web or load it from the file system
 const buffer = await fetch('https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf')
@@ -42,7 +45,7 @@ console.log(text)
 
 ### Official or Legacy PDF.js Build
 
-Usually you don't need to worry about the PDF.js build. `unpdf` ships with a serverless build of the latest PDF.js version. However, if you want to use the official PDF.js version or the legacy build, you can define a custom PDF.js module.
+Usually you don't need to worry about the PDF.js build. `punpdf` ships with a serverless build of the latest PDF.js version. However, if you want to use the official PDF.js version or the legacy build, you can define a custom PDF.js module.
 
 > [!WARNING]
 > PDF.js v5.x uses `Promise.withResolvers`, which may not be supported in all environments, such as Node < 22. Consider using the bundled serverless build, which includes a polyfill, or use an older version of PDF.js.
@@ -50,24 +53,24 @@ Usually you don't need to worry about the PDF.js build. `unpdf` ships with a ser
 For example, if you want to use the official PDF.js build:
 
 ```ts
-import { definePDFJSModule, extractText, getDocumentProxy } from 'unpdf'
+import { definePDFJSModule, extractText, getDocumentProxy } from 'punpdf'
 
-// Define the PDF.js build before using any other unpdf method
+// Define the PDF.js build before using any other punpdf method
 await definePDFJSModule(() => import('pdfjs-dist'))
 
-// Now, you can use all unpdf methods with the official PDF.js build
+// Now, you can use all punpdf methods with the official PDF.js build
 const pdf = await getDocumentProxy(/* … */)
 const { text } = await extractText(pdf)
 ```
 
 ### PDF.js API
 
-`unpdf` provides helpful [methods](#api) to work with PDF files, such as `extractText` and `extractImages`, which should cover most use cases. However, if you need more control over the PDF.js API, you can use the `getResolvedPDFJS` method to get the resolved PDF.js module.
+`punpdf` provides helpful [methods](#api) to work with PDF files, such as `extractText` and `extractImages`, which should cover most use cases. However, if you need more control over the PDF.js API, you can use the `getResolvedPDFJS` method to get the resolved PDF.js module.
 
 Access the PDF.js API directly by calling `getResolvedPDFJS`:
 
 ```ts
-import { getResolvedPDFJS } from 'unpdf'
+import { getResolvedPDFJS } from 'punpdf'
 
 const { version } = await getResolvedPDFJS()
 ```
@@ -79,7 +82,7 @@ For example, you can use the `getDocument` method to load a PDF file and then us
 
 ```ts
 import { readFile } from 'node:fs/promises'
-import { getResolvedPDFJS } from 'unpdf'
+import { getResolvedPDFJS } from 'punpdf'
 
 const { getDocument } = await getResolvedPDFJS()
 const data = await readFile('./dummy.pdf')
@@ -235,7 +238,7 @@ function extractLinks(
 
 ```ts
 import { readFile } from 'node:fs/promises'
-import { extractLinks, getDocumentProxy } from 'unpdf'
+import { extractLinks, getDocumentProxy } from 'punpdf'
 
 // Load a PDF file
 const buffer = await readFile('./document.pdf')
@@ -277,8 +280,8 @@ function extractImages(
 
 ```ts
 import { readFile, writeFile } from 'node:fs/promises'
+import { extractImages, getDocumentProxy } from 'punpdf'
 import sharp from 'sharp'
-import { extractImages, getDocumentProxy } from 'unpdf'
 
 async function extractPdfImages() {
   const buffer = await readFile('./document.pdf')
@@ -365,7 +368,7 @@ function renderPageAsImage(
 
 ```ts
 import { readFile, writeFile } from 'node:fs/promises'
-import { definePDFJSModule, renderPageAsImage } from 'unpdf'
+import { definePDFJSModule, renderPageAsImage } from 'punpdf'
 
 // Use the official PDF.js build
 await definePDFJSModule(() => import('pdfjs-dist'))
@@ -383,7 +386,7 @@ await writeFile('dummy-page-1.png', new Uint8Array(result))
 
 ```ts
 import { readFile, writeFile } from 'node:fs/promises'
-import { definePDFJSModule, renderPageAsImage } from 'unpdf'
+import { definePDFJSModule, renderPageAsImage } from 'punpdf'
 
 await definePDFJSModule(() => import('pdfjs-dist'))
 

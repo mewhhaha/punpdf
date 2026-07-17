@@ -81,7 +81,7 @@ export async function resolvePDFJSImport(
 
   try {
     // @ts-expect-error: Type mismatch
-    resolvedModule = await import('unpdf/pdfjs')
+    resolvedModule = await import('punpdf/pdfjs')
   }
   catch (error) {
     throw new Error(`Serverless PDF.js bundle could not be resolved: ${error}`)

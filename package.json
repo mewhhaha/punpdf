@@ -1,18 +1,18 @@
 {
-  "name": "unpdf",
+  "name": "punpdf",
   "type": "module",
   "version": "1.6.2",
   "packageManager": "pnpm@10.33.0",
-  "description": "PDF extraction and rendering across all JavaScript runtimes",
+  "description": "Accuracy-focused PDF extraction and rendering built from unpdf",
   "author": "Johann Schopplich <hello@johannschopplich.com>",
   "license": "MIT",
-  "homepage": "https://github.com/unjs/unpdf#readme",
+  "homepage": "https://github.com/mewhhaha/punpdf#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/unjs/unpdf.git"
+    "url": "git+https://github.com/mewhhaha/punpdf.git"
   },
   "bugs": {
-    "url": "https://github.com/unjs/unpdf/issues"
+    "url": "https://github.com/mewhhaha/punpdf/issues"
   },
   "keywords": [
     "cloudflare",
@@ -25,6 +25,7 @@
     "rendering",
     "serverless",
     "text-extraction",
+    "unpdf",
     "workers"
   ],
   "sideEffects": false,

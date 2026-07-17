@@ -18,7 +18,7 @@ import {
 
 const fixturesDir = fileURLToPath(new URL('fixtures', import.meta.url))
 
-describe('unpdf', () => {
+describe('punpdf', () => {
   it('can resolve a custom PDF.js version', async () => {
     // @ts-ignore: Dynamic import from package build
     await definePDFJSModule(() => import('../dist/pdfjs'))

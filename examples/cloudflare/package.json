@@ -1,5 +1,5 @@
 {
-  "name": "@unpdf/example-cloudflare",
+  "name": "@punpdf/example-cloudflare",
   "type": "module",
   "private": true,
   "scripts": {

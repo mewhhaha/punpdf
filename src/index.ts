@@ -4,7 +4,7 @@ import { getMeta as _getMeta } from './meta'
 import { extractText as _extractText, extractTextItems as _extractTextItems } from './text'
 import { resolvePDFJSImport } from './utils'
 
-export { configureUnPDF, definePDFJSModule } from './config'
+export { configure, definePDFJSModule } from './config'
 export { createIsomorphicCanvasFactory } from './image'
 export type { ExtractTextOptions, StructuredTextItem } from './text'
 
