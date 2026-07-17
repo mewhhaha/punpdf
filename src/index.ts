@@ -6,7 +6,7 @@ import { resolvePDFJSImport } from './utils'
 
 export { configureUnPDF, definePDFJSModule } from './config'
 export { createIsomorphicCanvasFactory } from './image'
-export type { StructuredTextItem } from './text'
+export type { ExtractTextOptions, StructuredTextItem } from './text'
 
 export {
   getDocumentProxy,

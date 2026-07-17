@@ -1,3 +1,4 @@
+import type { PDFDocumentProxy } from 'pdfjs-dist/types/src/display/api'
 import { readFile, writeFile } from 'node:fs/promises'
 /* eslint-disable ts/ban-ts-comment */
 import { join } from 'node:path'
@@ -60,6 +61,76 @@ describe('unpdf', () => {
 
     expect(text[0]).toMatchInlineSnapshot('"Dummy PDF file"')
     expect(totalPages).toMatchInlineSnapshot('1')
+  })
+
+  it('extracts text in visual reading order', async () => {
+    const { text } = await extractText(await getPDF('links.pdf'), {
+      readingOrder: 'visual',
+    })
+
+    expect(text[0]).toMatch(/^Links in PDF/)
+    expect(text[0]).toMatch(/Antenna House, Inc\.$/)
+  })
+
+  it('preserves every non-whitespace character in visual reading order', async () => {
+    const contentOrder = await extractText(await getPDF('links.pdf'))
+    const visualOrder = await extractText(await getPDF('links.pdf'), {
+      readingOrder: 'visual',
+    })
+
+    const contentCharacters = [...contentOrder.text.join('').replace(/\s/g, '')].sort()
+    const visualCharacters = [...visualOrder.text.join('').replace(/\s/g, '')].sort()
+    expect(visualCharacters).toEqual(contentCharacters)
+  })
+
+  it('extracts rotated pages in visual reading order', async () => {
+    const rotatedDocument = {
+      _pdfInfo: {},
+      numPages: 1,
+      getPage: async () => ({
+        getTextContent: async () => ({
+          items: [
+            { str: 'second', transform: [10, 0, 0, 10, 20, 5], width: 30, hasEOL: true },
+            { str: 'first', transform: [10, 0, 0, 10, 10, 5], width: 20, hasEOL: true },
+          ],
+        }),
+        getViewport: () => ({ transform: [0, 1, 1, 0, 0, 0] }),
+      }),
+    } as unknown as PDFDocumentProxy
+
+    const { text } = await extractText(rotatedDocument, {
+      readingOrder: 'visual',
+    })
+
+    expect(text[0]).toBe('first\nsecond')
+  })
+
+  it('separates aligned columns when font metrics overlap', async () => {
+    const documentWithOverlappingColumns = {
+      _pdfInfo: {},
+      numPages: 1,
+      getPage: async () => ({
+        getTextContent: async () => ({
+          items: [
+            { str: 'Report', transform: [10, 0, 0, 10, 10, 95], width: 35, hasEOL: false },
+            { str: 's', transform: [10, 0, 0, 10, 43, 95], width: 5, hasEOL: true },
+            { str: 'Full Renovation', transform: [10, 0, 0, 10, 10, 80], width: 100, hasEOL: false },
+            { str: 'A1', transform: [10, 0, 0, 10, 58, 80], width: 10, hasEOL: true },
+            { str: 'Full Renovation', transform: [10, 0, 0, 10, 10, 65], width: 100, hasEOL: false },
+            { str: 'A2', transform: [10, 0, 0, 10, 58, 65], width: 10, hasEOL: true },
+            { str: 'Full Renovation', transform: [10, 0, 0, 10, 10, 50], width: 100, hasEOL: false },
+            { str: 'A3', transform: [10, 0, 0, 10, 58, 50], width: 10, hasEOL: true },
+          ],
+        }),
+        getViewport: () => ({ transform: [1, 0, 0, -1, 0, 100] }),
+      }),
+    } as unknown as PDFDocumentProxy
+
+    const { text } = await extractText(documentWithOverlappingColumns, {
+      readingOrder: 'visual',
+    })
+
+    expect(text[0]).toBe('Reports\nFull Renovation A1\nFull Renovation A2\nFull Renovation A3')
   })
 
   it('extracts structured text items from a PDF', async () => {

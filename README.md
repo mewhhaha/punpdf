@@ -158,6 +158,8 @@ function getMeta(
 
 Extracts all text from a PDF. If `mergePages` is set to `true`, the text of all pages will be merged into a single string. Otherwise, an array of strings for each page will be returned.
 
+By default, text follows the PDF content stream. Set `readingOrder` to `"visual"` to order text from top to bottom and left to right based on its rendered page position. Visual order also infers spaces between separate text runs, which is useful for PDFs whose content stream does not follow their displayed reading order.
+
 **Type Declaration**
 
 ```ts
@@ -165,6 +167,7 @@ function extractText(
   data: DocumentInitParameters['data'] | PDFDocumentProxy,
   options?: {
     mergePages?: false
+    readingOrder?: 'content' | 'visual'
   }
 ): Promise<{
   totalPages: number
@@ -174,6 +177,7 @@ function extractText(
   data: DocumentInitParameters['data'] | PDFDocumentProxy,
   options: {
     mergePages: true
+    readingOrder?: 'content' | 'visual'
   }
 ): Promise<{
   totalPages: number
