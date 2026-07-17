@@ -95,6 +95,10 @@ describe('punpdf', () => {
     'two-column.pdf',
     'table.pdf',
     'superscript.pdf',
+    'mixed-layout.pdf',
+    'mixed-layout-rotate90.pdf',
+    'mixed-layout-rotate180.pdf',
+    'mixed-layout-rotate270.pdf',
   ]) {
     it(`preserves every non-whitespace character of ${fixture} in visual reading order`, async () => {
       const contentOrder = await extractText(await getPDF(fixture))
@@ -146,6 +150,44 @@ describe('punpdf', () => {
     })
 
     expect(text[0]).toBe('E=mc2\nH2O')
+  })
+
+  it('reads a mixed layout page the way a person would', async () => {
+    const { text } = await extractText(await getPDF('mixed-layout.pdf'), {
+      readingOrder: 'visual',
+    })
+
+    expect(text[0]).toBe(
+      'Quarterly Review\n'
+      + 'Revenue grew steadily across all regions\n'
+      + 'with costs held flat for the quarter.\n'
+      + 'North\t120.00\n'
+      + 'South\t98.50\n'
+      + 'East\t210.75\n'
+      + 'Alpha reports strong\n'
+      + 'engagement in the north\n'
+      + 'while retention holds\n'
+      + 'above expectations.\n'
+      + 'Beta launches next\n'
+      + 'quarter with pricing\n'
+      + 'still under internal\n'
+      + 'review by finance.\n'
+      + 'Page 1 of 1',
+    )
+  })
+
+  it('reads identically at every page rotation', async () => {
+    const upright = await extractText(await getPDF('mixed-layout.pdf'), {
+      readingOrder: 'visual',
+    })
+
+    for (const rotation of [90, 180, 270]) {
+      const rotated = await extractText(
+        await getPDF(`mixed-layout-rotate${rotation}.pdf`),
+        { readingOrder: 'visual' },
+      )
+      expect(rotated.text, `rotation ${rotation}`).toEqual(upright.text)
+    }
   })
 
   it('keeps line structure when merging pages in visual reading order', async () => {
