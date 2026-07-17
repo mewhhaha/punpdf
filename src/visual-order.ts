@@ -55,7 +55,19 @@ export function textInVisualOrder(
       }
     })
 
-  return orientationGroups(orientedItems)
+  // PDFs sometimes draw the same run twice in place (faux bold, duplicated
+  // layers); keeping both would fuse the copies into one doubled token.
+  const seenRuns = new Set<string>()
+  const uniqueItems = orientedItems.filter((orientedItem) => {
+    const key = `${Math.round(orientedItem.pageX * 4)},${Math.round(orientedItem.pageY * 4)},${orientedItem.item.str}`
+    if (seenRuns.has(key)) {
+      return false
+    }
+    seenRuns.add(key)
+    return true
+  })
+
+  return orientationGroups(uniqueItems)
     .map((group) => {
       const positionedItems = attachInlineGlyphs(group
         .map(({ item, fontSize, width, pageX, pageY, advanceUnitX, advanceUnitY }) => ({
@@ -440,7 +452,11 @@ function renderLine(line: Line, columnBaselines: Map<number, Set<number>>): stri
     }
 
     const followsWordGap = gap > seamFontSize * 0.1
-    const startsAlignedColumn = alignedBaselines.size >= 2
+    // Column evidence exists for cells whose overstated font metrics overlap
+    // the next column. A seam within kerning distance of touching is
+    // intra-word (small caps, kerned splits), however well it aligns.
+    const overlapsBeyondKerning = gap < -seamFontSize * 0.1
+    const startsAlignedColumn = overlapsBeyondKerning && alignedBaselines.size >= 2
     const wantsSeparator = runs.length > 0
       && !/[\t ]$/.test(previousText ?? '')
       && (pendingWhitespace || previousHasEOL || followsWordGap || startsAlignedColumn)

@@ -165,6 +165,25 @@ function tableBlock(random: () => number, topY: number): GeneratedBlock {
   return { items, text: rows.join('\n'), bottom: topY - (rowCount - 1) * LINE_ADVANCE }
 }
 
+// Cells whose overstated font metrics overlap the next column must still
+// separate through repeated start-x alignment.
+function overlappingTableBlock(random: () => number, topY: number): GeneratedBlock {
+  const rowCount = 3 + Math.floor(random() * 3)
+  const items: VisualOrderItem[] = []
+  const rows: string[] = []
+
+  for (let rowIndex = 0; rowIndex < rowCount; rowIndex++) {
+    const y = topY - rowIndex * LINE_ADVANCE
+    const label = randomWord(random)
+    const amount = randomWord(random)
+    items.push({ ...textRun(label, 57, y), width: (260 - 57) + 20 })
+    items.push(textRun(amount, 260, y))
+    rows.push(`${label} ${amount}`)
+  }
+
+  return { items, text: rows.join('\n'), bottom: topY - (rowCount - 1) * LINE_ADVANCE }
+}
+
 function columnsBlock(random: () => number, topY: number): GeneratedBlock {
   const columnStarts = random() < 0.4 ? [57, 250, 443] : [57, 320]
   const maxWordsPerLine = columnStarts.length === 3 ? 3 : 4
@@ -207,13 +226,15 @@ function generatePage(seed: number): { items: VisualOrderItem[], expected: strin
   const blockCount = 2 + Math.floor(random() * 3)
   for (let blockIndex = 0; blockIndex < blockCount; blockIndex++) {
     const roll = random()
-    const block = roll < 0.2
+    const block = roll < 0.18
       ? headingBlock(random, topY)
-      : roll < 0.5
+      : roll < 0.45
         ? paragraphBlock(random, topY)
-        : roll < 0.75
+        : roll < 0.65
           ? tableBlock(random, topY)
-          : columnsBlock(random, topY)
+          : roll < 0.78
+            ? overlappingTableBlock(random, topY)
+            : columnsBlock(random, topY)
     blocks.push(block)
     topY = block.bottom - BLOCK_GAP
   }
@@ -280,7 +301,10 @@ function chaosCoordinate(random: () => number): number {
   return (random() - 0.5) * 1200
 }
 
-function chaosText(random: () => number): string {
+// Visible chaos text is unique per item so that duplicate-draw removal
+// (which intentionally drops repeated runs) cannot void the conservation
+// oracle when random geometry collides.
+function chaosText(random: () => number, index: number): string {
   const roll = random()
   if (roll < 0.08) {
     return ''
@@ -288,7 +312,8 @@ function chaosText(random: () => number): string {
   if (roll < 0.16) {
     return '   '
   }
-  return Array.from({ length: 1 + Math.floor(random() * 3) }, () => randomWord(random)).join(' ')
+  const words = Array.from({ length: 1 + Math.floor(random() * 3) }, () => randomWord(random))
+  return `${index}${words.join(' ')}`
 }
 
 const chaosViewports = [
@@ -347,8 +372,8 @@ describe('textInVisualOrder properties', () => {
       const random = mulberry32(1000 + seed)
       const items: VisualOrderItem[] = Array.from(
         { length: 1 + Math.floor(random() * 40) },
-        () => ({
-          str: chaosText(random),
+        (_, index) => ({
+          str: chaosText(random, index),
           transform: Array.from({ length: 6 }, () => chaosCoordinate(random)),
           width: chaosCoordinate(random),
           dir: random() < 0.2 ? 'rtl' : 'ltr',

@@ -154,6 +154,17 @@ const memo = [
   { text: 'Page 1 of 1', x: 700, y: 560, size: 8 },
 ]
 
+// A page number drawn twice at the same position, as layered or faux-bold
+// PDFs do. The duplicate draws are separated in the content stream, the way
+// layer duplication produces them.
+const shadowText = [
+  { text: '36', x: 66, y: 780, size: 8 },
+  { text: 'Financial Stability Report', x: 90, y: 780, size: 8 },
+  { text: '36', x: 66, y: 780, size: 8 },
+]
+writeFileSync(join(fixturesDir, 'shadow-text.pdf'), pdfFromRuns(shadowText))
+console.log('wrote test/fixtures/shadow-text.pdf')
+
 // A sideways table on an unrotated portrait page, as financial reports
 // embed landscape tables and chart labels: the text advances up the page
 // (transform [0, s, -s, 0, x, y]) while the page itself stays upright.
