@@ -70,6 +70,22 @@ describe('textInVisualOrder', () => {
     expect(text).toBe('Hello world')
   })
 
+  it.each([
+    ['87111', '0.12', 37.51318119468372],
+    ['87111', '0.48', 37.63541711812114],
+    ['87113', '4.58', 37.982381897808644],
+  ])('keeps postal code %s separate from distance %s when font metrics overlap', (postalCode, distance, addressWidth) => {
+    const fontSize = 1.55994
+    const text = textInVisualOrder([
+      run(`Example address ${postalCode}`, { x: 49.8000015, y: 80, width: addressWidth, fontSize }),
+      run('-', { x: 79.9199985, y: 80, width: 0.47734164, fontSize }),
+      run(' ', { x: 80.39734014, y: 80, width: 9.12354648, fontSize }),
+      run(distance, { x: 87.24, y: 80, width: 2.83285104, fontSize }),
+    ], pageViewport)
+
+    expect(text.replace(/\s+/g, ' ')).toBe(`Example address ${postalCode}- ${distance}`)
+  })
+
   it('keeps a superscript run inline with its anchor text', () => {
     const text = textInVisualOrder([
       run('E=mc', { x: 10, y: 20, width: 22 }),
