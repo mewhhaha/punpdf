@@ -1,12 +1,12 @@
 import { extractImages as _extractImages, renderPageAsImage as _renderPageAsImage } from './image'
 import { extractLinks as _extractLinks } from './links'
 import { getMeta as _getMeta } from './meta'
-import { extractText as _extractText, extractTextItems as _extractTextItems } from './text'
+import { extractText as _extractText, extractTextItems as _extractTextItems, extractTextPages as _extractTextPages } from './text'
 import { resolvePDFJSImport } from './utils'
 
 export { configure, definePDFJSModule } from './config'
 export { createIsomorphicCanvasFactory } from './image'
-export type { ExtractTextOptions, StructuredTextItem } from './text'
+export type { ExtractedTextPage, ExtractTextOptions, ExtractTextPagesOptions, StructuredTextItem } from './text'
 
 export {
   getDocumentProxy,
@@ -27,6 +27,11 @@ export const extractText: typeof _extractText = async (...args) => {
 export const extractTextItems: typeof _extractTextItems = async (...args) => {
   await resolvePDFJSImport()
   return await _extractTextItems(...args)
+}
+
+export const extractTextPages: typeof _extractTextPages = async function* (...args) {
+  await resolvePDFJSImport()
+  yield* _extractTextPages(...args)
 }
 
 export const extractImages: typeof _extractImages = async (...args) => {

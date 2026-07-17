@@ -28,13 +28,31 @@ export interface ExtractTextOptions {
   readingOrder?: 'content' | 'visual'
 }
 
+export interface ExtractTextPagesOptions {
+  readingOrder?: NonNullable<ExtractTextOptions['readingOrder']>
+}
+
+export interface ExtractedTextPage {
+  pageNumber: number
+  totalPages: number
+  text: string
+}
+
 export async function extractTextItems(
   data: DocumentInitParameters['data'] | PDFDocumentProxy,
 ): Promise<{ totalPages: number, items: StructuredTextItem[][] }> {
-  const pdf = isPDFDocumentProxy(data) ? data : await getDocumentProxy(data)
-  const items = await Promise.all(
-    Array.from({ length: pdf.numPages }, (_, i) => getPageTextItems(pdf, i + 1)),
-  )
+  const ownsDocument = !isPDFDocumentProxy(data)
+  const pdf = ownsDocument ? await getDocumentProxy(data) : data
+  const items: StructuredTextItem[][] = []
+
+  try {
+    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++)
+      items.push(await getPageTextItems(pdf, pageNumber))
+  }
+  finally {
+    if (ownsDocument)
+      await pdf.cleanup()
+  }
 
   return { totalPages: pdf.numPages, items }
 }
@@ -44,25 +62,54 @@ async function getPageTextItems(
   pageNumber: number,
 ): Promise<StructuredTextItem[]> {
   const page = await document.getPage(pageNumber)
-  const content = await page.getTextContent()
-  const styles = content.styles as Record<string, TextStyle>
 
-  return (content.items as TextItem[])
-    .filter(item => item.str != null)
-    .map((item) => {
-      const [_a, _b, c, d, e, f] = item.transform
-      return {
-        str: item.str,
-        x: e,
-        y: f,
-        width: item.width,
-        height: item.height,
-        fontSize: Math.hypot(c, d),
-        fontFamily: styles[item.fontName]?.fontFamily ?? '',
-        dir: item.dir,
-        hasEOL: item.hasEOL,
+  try {
+    const content = await page.getTextContent()
+    const styles = content.styles as Record<string, TextStyle>
+
+    return (content.items as TextItem[])
+      .filter(item => item.str != null)
+      .map((item) => {
+        const [_a, _b, c, d, e, f] = item.transform
+        return {
+          str: item.str,
+          x: e,
+          y: f,
+          width: item.width,
+          height: item.height,
+          fontSize: Math.hypot(c, d),
+          fontFamily: styles[item.fontName]?.fontFamily ?? '',
+          dir: item.dir,
+          hasEOL: item.hasEOL,
+        }
+      })
+  }
+  finally {
+    page.cleanup()
+  }
+}
+
+export async function* extractTextPages(
+  data: DocumentInitParameters['data'] | PDFDocumentProxy,
+  options: ExtractTextPagesOptions = {},
+): AsyncGenerator<ExtractedTextPage> {
+  const { readingOrder = 'content' } = options
+  const ownsDocument = !isPDFDocumentProxy(data)
+  const pdf = ownsDocument ? await getDocumentProxy(data) : data
+
+  try {
+    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
+      yield {
+        pageNumber,
+        totalPages: pdf.numPages,
+        text: await getPageText(pdf, pageNumber, readingOrder),
       }
-    })
+    }
+  }
+  finally {
+    if (ownsDocument)
+      await pdf.cleanup()
+  }
 }
 
 export function extractText(
@@ -84,13 +131,16 @@ export async function extractText(
   options: ExtractTextOptions = {},
 ) {
   const { mergePages = false, readingOrder = 'content' } = options
-  const pdf = isPDFDocumentProxy(data) ? data : await getDocumentProxy(data)
-  const texts = await Promise.all(
-    Array.from({ length: pdf.numPages }, (_, i) => getPageText(pdf, i + 1, readingOrder)),
-  )
+  const texts: string[] = []
+  let totalPages = 0
+
+  for await (const page of extractTextPages(data, { readingOrder })) {
+    totalPages = page.totalPages
+    texts.push(page.text)
+  }
 
   return {
-    totalPages: pdf.numPages,
+    totalPages,
     text: mergePages ? mergePageTexts(texts, readingOrder) : texts,
   }
 }
@@ -114,14 +164,20 @@ async function getPageText(
   readingOrder: NonNullable<ExtractTextOptions['readingOrder']>,
 ) {
   const page = await document.getPage(pageNumber)
-  const content = await page.getTextContent()
-  const items = (content.items as TextItem[]).filter(item => item.str != null)
 
-  if (readingOrder === 'content') {
-    return items
-      .map(item => item.str + (item.hasEOL ? '\n' : ''))
-      .join('')
+  try {
+    const content = await page.getTextContent()
+    const items = (content.items as TextItem[]).filter(item => item.str != null)
+
+    if (readingOrder === 'content') {
+      return items
+        .map(item => item.str + (item.hasEOL ? '\n' : ''))
+        .join('')
+    }
+
+    return textInVisualOrder(items, page.getViewport({ scale: 1 }).transform)
   }
-
-  return textInVisualOrder(items, page.getViewport({ scale: 1 }).transform)
+  finally {
+    page.cleanup()
+  }
 }

@@ -1,4 +1,6 @@
 .wrangler
+.claude
+.agents
 dist
 node_modules
 examples/**/build

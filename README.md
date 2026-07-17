@@ -190,6 +190,34 @@ function extractText(
 }>
 ```
 
+### `extractTextPages`
+
+Streams text sequentially, one page at a time. Use this API for large documents or memory-constrained runtimes such as Cloudflare Workers. When passed raw PDF bytes, the iterator releases page resources after completion or early cancellation.
+
+```ts
+import { extractTextPages } from 'punpdf'
+
+for await (const page of extractTextPages(buffer, { readingOrder: 'visual' })) {
+  console.log(`Page ${page.pageNumber} of ${page.totalPages}`)
+  console.log(page.text)
+}
+```
+
+**Type Declaration**
+
+```ts
+function extractTextPages(
+  data: DocumentInitParameters['data'] | PDFDocumentProxy,
+  options?: {
+    readingOrder?: 'content' | 'visual'
+  },
+): AsyncGenerator<{
+  pageNumber: number
+  totalPages: number
+  text: string
+}>
+```
+
 ### `extractTextItems`
 
 Extracts text with layout information – one array of positioned items per page. Useful when plain text is not enough and you need coordinates, font sizes, or reading direction, e.g. for table detection or positional parsing.

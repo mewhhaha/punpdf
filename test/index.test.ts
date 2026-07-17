@@ -9,6 +9,7 @@ import {
   extractLinks,
   extractText,
   extractTextItems,
+  extractTextPages,
   getDocumentProxy,
   getMeta,
   getResolvedPDFJS,
@@ -69,6 +70,22 @@ describe('punpdf', () => {
 
     expect(text[0]).toMatch(/^Links in PDF/)
     expect(text[0]).toMatch(/Antenna House, Inc\.$/)
+  })
+
+  it('streams text one page at a time', async () => {
+    const pages = []
+
+    for await (const page of extractTextPages(await getPDF('links.pdf'), {
+      readingOrder: 'visual',
+    })) {
+      pages.push(page)
+    }
+
+    expect(pages).toHaveLength(2)
+    expect(pages.map(page => page.pageNumber)).toEqual([1, 2])
+    expect(pages.every(page => page.totalPages === 2)).toBe(true)
+    expect(pages[0]!.text).toMatch(/^Links in PDF/)
+    expect(pages[1]!.text).toMatch(/Antenna House, Inc\.$/)
   })
 
   for (const fixture of [
