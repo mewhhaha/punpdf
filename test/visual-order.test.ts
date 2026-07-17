@@ -8,10 +8,10 @@ const pageViewport = [1, 0, 0, -1, 0, 100]
 
 function run(
   str: string,
-  position: { x: number, y: number, width: number, fontSize?: number },
+  position: { x: number, y: number, width: number, fontSize?: number, dir?: string },
 ): VisualOrderItem {
-  const { x, y, width, fontSize = 10 } = position
-  return { str, transform: [fontSize, 0, 0, fontSize, x, y], width }
+  const { x, y, width, fontSize = 10, dir = 'ltr' } = position
+  return { str, transform: [fontSize, 0, 0, fontSize, x, y], width, dir }
 }
 
 describe('textInVisualOrder', () => {
@@ -170,6 +170,40 @@ describe('textInVisualOrder', () => {
     ], pageViewport)
 
     expect(text).toBe('Row1\tA\nRow2\tB\nRow3\tC\nRow4\tD')
+  })
+
+  it('reads a contiguous right-to-left sequence from its rightmost run', () => {
+    const text = textInVisualOrder([
+      run('ALEPH', { x: 50, y: 80, width: 30, dir: 'rtl' }),
+      run('BET', { x: 10, y: 80, width: 30, dir: 'rtl' }),
+    ], pageViewport)
+
+    expect(text).toBe('ALEPH BET')
+  })
+
+  it('keeps left-to-right runs in place around a right-to-left sequence', () => {
+    const text = textInVisualOrder([
+      run('Total:', { x: 10, y: 80, width: 28 }),
+      run('GIMEL', { x: 44, y: 80, width: 20, dir: 'rtl' }),
+      run('DALET', { x: 70, y: 80, width: 20, dir: 'rtl' }),
+    ], pageViewport)
+
+    expect(text).toBe('Total: DALET GIMEL')
+  })
+
+  it('keeps text whose geometry is malformed', () => {
+    const text = textInVisualOrder([
+      run('Hello', { x: 10, y: 80, width: 30 }),
+      {
+        str: 'kept',
+        transform: [Number.NaN, 0, 0, Number.NaN, Number.NaN, Number.POSITIVE_INFINITY],
+        width: Number.NaN,
+        dir: 'ltr',
+      },
+    ], pageViewport)
+
+    expect(text).toContain('Hello')
+    expect(text).toContain('kept')
   })
 
   it('returns an empty string when the page has no visible text', () => {

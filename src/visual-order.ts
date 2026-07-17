@@ -1,13 +1,14 @@
 import type { TextItem } from 'pdfjs-dist/types/src/display/api'
 
 /** The subset of a PDF.js text item that positions its text on the page. */
-export type VisualOrderItem = Pick<TextItem, 'str' | 'transform' | 'width'>
+export type VisualOrderItem = Pick<TextItem, 'str' | 'transform' | 'width' | 'dir'>
 
 interface PositionedItem {
   item: VisualOrderItem
   fontSize: number
   x: number
   y: number
+  width: number
 }
 
 interface Line {
@@ -38,7 +39,16 @@ export function textInVisualOrder(
       const transformedD = viewportB * c + viewportD * d
       const x = viewportA * itemX + viewportC * itemY + viewportX
       const y = viewportB * itemX + viewportD * itemY + viewportY
-      return { item, fontSize: Math.hypot(transformedC, transformedD), x, y }
+      const fontSize = Math.hypot(transformedC, transformedD)
+      // Malformed PDFs can carry degenerate matrices; fall back to a sane
+      // position so the text is kept instead of corrupting the ordering.
+      return {
+        item,
+        fontSize: Number.isFinite(fontSize) && fontSize > 0 ? fontSize : 1,
+        x: Number.isFinite(x) ? x : 0,
+        y: Number.isFinite(y) ? y : 0,
+        width: Number.isFinite(item.width) ? item.width : 0,
+      }
     })
     .sort((left, right) => left.y - right.y || left.x - right.x)
 
@@ -100,7 +110,7 @@ function splitAtVerticalGutter(
   gutterThreshold: number,
 ): [PositionedItem[], PositionedItem[]] | undefined {
   const intervals = items
-    .map(item => [item.x, item.x + item.item.width] as const)
+    .map(item => [item.x, item.x + item.width] as const)
     .sort((left, right) => left[0] - right[0])
 
   const gutters: Array<{ start: number, end: number }> = []
@@ -119,7 +129,7 @@ function splitAtVerticalGutter(
     const left: PositionedItem[] = []
     const right: PositionedItem[] = []
     for (const positionedItem of items) {
-      (positionedItem.x + positionedItem.item.width <= gutter.start ? left : right)
+      (positionedItem.x + positionedItem.width <= gutter.start ? left : right)
         .push(positionedItem)
     }
     if (looksLikeFacingColumns(left, right)) {
@@ -223,13 +233,21 @@ function belongsToLine(line: Line, positionedItem: PositionedItem): boolean {
   return overlap >= Math.min(line.fontSize, positionedItem.fontSize) * 0.5
 }
 
+interface RenderedRun {
+  text: string
+  /** Separator between this run and its visual left neighbor. */
+  separator: string
+  rtl: boolean
+}
+
 function renderLine(line: Line, columnBaselines: Map<number, Set<number>>): string {
   line.items.sort((left, right) => left.x - right.x)
 
+  const runs: RenderedRun[] = []
   let rightEdge: number | undefined
   let previousFontSize: number | undefined
+  let previousText: string | undefined
   let pendingWhitespace = false
-  let text = ''
   for (const positionedItem of line.items) {
     const itemText = positionedItem.item.str
     // Whitespace-only runs mark a separator, but its kind (space or tab) is
@@ -260,15 +278,55 @@ function renderLine(line: Line, columnBaselines: Map<number, Set<number>>): stri
 
     const followsWordGap = gap > seamFontSize * 0.1
     const startsAlignedColumn = alignedBaselines.size >= 2
-    if (text && !/[\t ]$/.test(text) && (pendingWhitespace || followsWordGap || startsAlignedColumn)) {
-      text += gap > seamFontSize * 2 ? '\t' : ' '
-    }
+    const wantsSeparator = runs.length > 0
+      && !/[\t ]$/.test(previousText ?? '')
+      && (pendingWhitespace || followsWordGap || startsAlignedColumn)
 
+    runs.push({
+      text: itemText,
+      separator: wantsSeparator ? (gap > seamFontSize * 2 ? '\t' : ' ') : '',
+      rtl: positionedItem.item.dir === 'rtl',
+    })
     pendingWhitespace = false
-    text += itemText
-    rightEdge = positionedItem.x + positionedItem.item.width
+    previousText = itemText
+    rightEdge = positionedItem.x + positionedItem.width
     previousFontSize = positionedItem.fontSize
   }
 
-  return text.trimEnd()
+  return joinRuns(runs).trimEnd()
+}
+
+// PDF.js stores right-to-left runs in logical order, so a contiguous
+// right-to-left sequence reads from its visually rightmost run backwards.
+function joinRuns(runs: RenderedRun[]): string {
+  const groups: Array<{ rtl: boolean, runs: RenderedRun[] }> = []
+  for (const renderedRun of runs) {
+    const group = groups.at(-1)
+    if (group && group.rtl === renderedRun.rtl) {
+      group.runs.push(renderedRun)
+      continue
+    }
+    groups.push({ rtl: renderedRun.rtl, runs: [renderedRun] })
+  }
+
+  let text = ''
+  for (const group of groups) {
+    text += group.runs.at(0)?.separator ?? ''
+    if (!group.rtl) {
+      for (const [index, renderedRun] of group.runs.entries()) {
+        text += (index === 0 ? '' : renderedRun.separator) + renderedRun.text
+      }
+      continue
+    }
+
+    const rightmostFirst = [...group.runs].reverse()
+    for (const [index, renderedRun] of rightmostFirst.entries()) {
+      text += renderedRun.text
+      if (index < rightmostFirst.length - 1) {
+        text += renderedRun.separator
+      }
+    }
+  }
+
+  return text
 }
