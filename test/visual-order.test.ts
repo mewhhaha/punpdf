@@ -46,6 +46,44 @@ describe('textInVisualOrder', () => {
     expect(text).toBe('$1,947\t$1,930\n$2,006\t$1,999')
   })
 
+  it('keeps rotated currency values and month labels in separate columns', () => {
+    const text = textInVisualOrder([
+      { str: '$1,947', transform: [0, 4, -4, 0, 50, 10], width: 12, dir: 'ltr' },
+      { str: '$1,930', transform: [0, 4, -4, 0, 50, 33], width: 12, dir: 'ltr' },
+      { str: 'Sep', transform: [0, 4, -4, 0, 60, 10], width: 7, dir: 'ltr' },
+      { str: 'Oct', transform: [0, 4, -4, 0, 60, 33], width: 7, dir: 'ltr' },
+      { str: 'Dec', transform: [0, 4, -4, 0, 70, 10], width: 7, dir: 'ltr' },
+      { str: 'Jan', transform: [0, 4, -4, 0, 70, 33], width: 7, dir: 'ltr' },
+    ], pageViewport)
+
+    expect(text).toBe('$1,947\t$1,930\nSep\tOct\nDec\tJan')
+  })
+
+  it('separates adjacent diagonal property headings at their PDF.js line boundaries', () => {
+    const diagonalHeading = (
+      str: string,
+      x: number,
+      y: number,
+      width: number,
+    ) => ({
+      str,
+      transform: [6.193889, 6.193889, -6.194381, 6.194381, x, y],
+      width,
+      dir: 'ltr',
+      hasEOL: true,
+    } as VisualOrderItem)
+    const text = textInVisualOrder([
+      diagonalHeading('Allaso High Desert', 323.644, 450.355, 66.625),
+      diagonalHeading('Allegro at Tanoan', 402.365, 451.072, 64.347),
+      diagonalHeading('Altezza High Desert', 478.2, 448.91, 70.654),
+      diagonalHeading('Olympus Latitude', 519.485, 451.189, 64.233),
+    ], [1, 0, 0, -1, 0, 842])
+
+    expect(text).toBe(
+      'Allaso High Desert Allegro at Tanoan Altezza High Desert Olympus Latitude',
+    )
+  })
+
   it('reads upright text before a sideways block that starts lower', () => {
     const text = textInVisualOrder([
       run('Report', { x: 10, y: 95, width: 30 }),
@@ -125,6 +163,57 @@ describe('textInVisualOrder', () => {
     ], pageViewport)
 
     expect(text).toBe('H2O')
+  })
+
+  it('keeps a matrix identifier subscript attached to its base symbol', () => {
+    const text = textInVisualOrder([
+      run('𝑅', { x: 187.294, y: 413.184, width: 8.167, fontSize: 10.76 }),
+      run('𝑥', { x: 195.461, y: 410.527, width: 4.881, fontSize: 7.532 }),
+      run('(𝜙) =', { x: 200.944, y: 413.184, width: 26.189, fontSize: 10.76 }),
+      run('⎡', { x: 230.13, y: 426.295, width: 7.177, fontSize: 10.76 }),
+      run('⎢', { x: 230.13, y: 415.759, width: 7.177, fontSize: 10.76 }),
+      run('⎢', { x: 230.13, y: 405.23, width: 7.177, fontSize: 10.76 }),
+      run('⎣', { x: 230.13, y: 389.314, width: 7.177, fontSize: 10.76 }),
+      run('1', { x: 245.184, y: 431.368, width: 5.38, fontSize: 10.76 }),
+      run('0', { x: 276.592, y: 431.368, width: 5.38, fontSize: 10.76 }),
+      run('0', { x: 308.102, y: 431.368, width: 5.38, fontSize: 10.76 }),
+      run('0', { x: 237.307, y: 412.001, width: 5.38, fontSize: 10.76 }),
+      run('cos 𝜃', { x: 252.639, y: 412.001, width: 21.239, fontSize: 10.76 }),
+      run('− sin 𝜃', { x: 283.842, y: 412.001, width: 30.213, fontSize: 10.76 }),
+      run('0', { x: 237.307, y: 392.634, width: 5.38, fontSize: 10.76 }),
+      run('sin 𝜃', { x: 253.231, y: 392.634, width: 20.056, fontSize: 10.76 }),
+      run('cos 𝜃', { x: 288.329, y: 392.634, width: 21.239, fontSize: 10.76 }),
+      run('⎤', { x: 314.064, y: 426.295, width: 7.177, fontSize: 10.76 }),
+      run('⎥', { x: 314.064, y: 415.759, width: 7.177, fontSize: 10.76 }),
+      run('⎥', { x: 314.064, y: 405.23, width: 7.177, fontSize: 10.76 }),
+      run('⎦', { x: 314.064, y: 389.314, width: 7.177, fontSize: 10.76 }),
+    ], [1, 0, 0, -1, 0, 842])
+
+    expect(text).toContain('𝑅𝑥(𝜙) =')
+  })
+
+  it('keeps a raised radical attached to its following expression', () => {
+    const text = textInVisualOrder([
+      run('expressions like', { x: 10, y: 50, width: 70, fontSize: 9 }),
+      run('√', { x: 82, y: 58.6, width: 10, fontSize: 12 }),
+      run('𝑥 < 𝑦', { x: 92, y: 50, width: 29, fontSize: 12 }),
+      run('without recentering', { x: 123, y: 50, width: 90, fontSize: 9 }),
+    ], pageViewport)
+
+    expect(text).toBe('expressions like √𝑥 < 𝑦 without recentering')
+  })
+
+  it('keeps a denominator radical and exponent attached to the radicand', () => {
+    const text = textInVisualOrder([
+      run('𝑃𝑟𝑜𝑗 =', { x: 10, y: 50, width: 35, fontSize: 10.8 }),
+      run('(𝑎 − 𝑏) ⋅ (𝑐 − 𝑏)', { x: 52, y: 57.3, width: 71, fontSize: 10.8 }),
+      run('(', { x: 49.8, y: 41.2, width: 4.2, fontSize: 10.8 }),
+      run('√', { x: 54, y: 50.3, width: 9, fontSize: 10.8 }),
+      run('𝑐 − 𝑏 ⋅ 𝑐 − 𝑏)', { x: 63, y: 41.2, width: 57.5, fontSize: 10.8 }),
+      run('2', { x: 120.5, y: 44.3, width: 4.3, fontSize: 7.5 }),
+    ], pageViewport)
+
+    expect(text).toContain('(√𝑐 − 𝑏 ⋅ 𝑐 − 𝑏)2')
   })
 
   it('does not treat near-aligned word seams as a column boundary', () => {

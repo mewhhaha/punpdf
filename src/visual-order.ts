@@ -2,6 +2,7 @@ import type { TextItem } from 'pdfjs-dist/types/src/display/api'
 
 /** The subset of a PDF.js text item that positions its text on the page. */
 export type VisualOrderItem = Pick<TextItem, 'str' | 'transform' | 'width' | 'dir'>
+  & { hasEOL?: boolean }
 
 interface PositionedItem {
   item: VisualOrderItem
@@ -56,14 +57,14 @@ export function textInVisualOrder(
 
   return orientationGroups(orientedItems)
     .map((group) => {
-      const positionedItems = group
+      const positionedItems = attachInlineGlyphs(group
         .map(({ item, fontSize, width, pageX, pageY, advanceUnitX, advanceUnitY }) => ({
           item,
           fontSize,
           width,
           x: advanceUnitX * pageX + advanceUnitY * pageY,
           y: -advanceUnitY * pageX + advanceUnitX * pageY,
-        }))
+        })))
         .sort((left, right) => left.y - right.y || left.x - right.x)
       return readingBlocks(positionedItems)
         .map(block => renderBlock(block))
@@ -71,6 +72,97 @@ export function textInVisualOrder(
     })
     .filter(text => text.length > 0)
     .join('\n')
+}
+
+function attachInlineGlyphs(items: PositionedItem[]): PositionedItem[] {
+  let attachedItems = [...items]
+
+  for (const radical of items.filter(item => item.item.str === '√')) {
+    const radicalRight = radical.x + radical.width
+    const radicand = attachedItems
+      .filter(item =>
+        item !== radical
+        && item.item.str.trim().length > 0
+        && item.item.str !== '√'
+        && Math.abs(item.x - radicalRight) <= Math.max(0.5, radical.fontSize * 0.1)
+        && Math.abs(item.y - radical.y) <= radical.fontSize,
+      )
+      .sort((left, right) =>
+        Math.abs(left.x - radicalRight) - Math.abs(right.x - radicalRight)
+        || Math.abs(left.y - radical.y) - Math.abs(right.y - radical.y),
+      )
+      .at(0)
+    if (!radicand) {
+      continue
+    }
+
+    attachedItems = attachedItems.filter(item => item !== radical && item !== radicand)
+    attachedItems.push({
+      ...radicand,
+      item: {
+        ...radicand.item,
+        str: radical.item.str + radicand.item.str,
+        hasEOL: radical.item.hasEOL || radicand.item.hasEOL,
+      },
+      x: radical.x,
+      width: Math.max(
+        radical.x + radical.width,
+        radicand.x + radicand.width,
+      ) - radical.x,
+    })
+  }
+
+  const candidates = [...attachedItems].sort(
+    (left, right) => left.fontSize - right.fontSize,
+  )
+  for (const script of candidates) {
+    if (!attachedItems.includes(script) || script.item.str.trim().length === 0) {
+      continue
+    }
+
+    const base = attachedItems
+      .filter((candidate) => {
+        if (
+          candidate === script
+          || candidate.item.str.trim().length === 0
+          || script.fontSize >= candidate.fontSize * 0.85
+        ) {
+          return false
+        }
+
+        const gap = script.x - (candidate.x + candidate.width)
+        const overlap = Math.min(candidate.y, script.y)
+          - Math.max(candidate.y - candidate.fontSize, script.y - script.fontSize)
+        return gap >= -0.5
+          && gap <= Math.max(0.75, candidate.fontSize * 0.1)
+          && Math.abs(candidate.y - script.y) >= script.fontSize * 0.15
+          && overlap >= script.fontSize * 0.5
+      })
+      .sort((left, right) =>
+        Math.abs(script.x - left.x - left.width)
+        - Math.abs(script.x - right.x - right.width),
+      )
+      .at(0)
+    if (!base) {
+      continue
+    }
+
+    attachedItems = attachedItems.filter(item => item !== base && item !== script)
+    attachedItems.push({
+      ...base,
+      item: {
+        ...base.item,
+        str: base.item.str + script.item.str,
+        hasEOL: base.item.hasEOL || script.item.hasEOL,
+      },
+      width: Math.max(
+        base.x + base.width,
+        script.x + script.width,
+      ) - base.x,
+    })
+  }
+
+  return attachedItems
 }
 
 interface OrientedItem {
@@ -317,6 +409,7 @@ function renderLine(line: Line, columnBaselines: Map<number, Set<number>>): stri
   let rightEdge: number | undefined
   let previousFontSize: number | undefined
   let previousText: string | undefined
+  let previousHasEOL = false
   let pendingWhitespace = false
   for (const positionedItem of line.items) {
     const itemText = positionedItem.item.str
@@ -350,7 +443,7 @@ function renderLine(line: Line, columnBaselines: Map<number, Set<number>>): stri
     const startsAlignedColumn = alignedBaselines.size >= 2
     const wantsSeparator = runs.length > 0
       && !/[\t ]$/.test(previousText ?? '')
-      && (pendingWhitespace || followsWordGap || startsAlignedColumn)
+      && (pendingWhitespace || previousHasEOL || followsWordGap || startsAlignedColumn)
 
     runs.push({
       text: itemText,
@@ -359,6 +452,7 @@ function renderLine(line: Line, columnBaselines: Map<number, Set<number>>): stri
     })
     pendingWhitespace = false
     previousText = itemText
+    previousHasEOL = positionedItem.item.hasEOL ?? false
     rightEdge = positionedItem.x + positionedItem.width
     previousFontSize = positionedItem.fontSize
   }
