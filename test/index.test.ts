@@ -71,15 +71,74 @@ describe('punpdf', () => {
     expect(text[0]).toMatch(/Antenna House, Inc\.$/)
   })
 
-  it('preserves every non-whitespace character in visual reading order', async () => {
-    const contentOrder = await extractText(await getPDF('links.pdf'))
-    const visualOrder = await extractText(await getPDF('links.pdf'), {
+  for (const fixture of [
+    'sample.pdf',
+    'links.pdf',
+    'pdflatex-image.pdf',
+    'two-column.pdf',
+    'table.pdf',
+    'superscript.pdf',
+  ]) {
+    it(`preserves every non-whitespace character of ${fixture} in visual reading order`, async () => {
+      const contentOrder = await extractText(await getPDF(fixture))
+      const visualOrder = await extractText(await getPDF(fixture), {
+        readingOrder: 'visual',
+      })
+
+      const contentCharacters = [...contentOrder.text.join('').replace(/\s/g, '')].sort()
+      const visualCharacters = [...visualOrder.text.join('').replace(/\s/g, '')].sort()
+      expect(visualCharacters).toEqual(contentCharacters)
+    })
+  }
+
+  it('reads two-column pages column by column in visual reading order', async () => {
+    const { text } = await extractText(await getPDF('two-column.pdf'), {
       readingOrder: 'visual',
     })
 
-    const contentCharacters = [...contentOrder.text.join('').replace(/\s/g, '')].sort()
-    const visualCharacters = [...visualOrder.text.join('').replace(/\s/g, '')].sort()
-    expect(visualCharacters).toEqual(contentCharacters)
+    expect(text[0]).toBe(
+      'Two Column Sample\n'
+      + 'The left column begins the story\n'
+      + 'and continues along its own flow\n'
+      + 'of narrow measured lines that fill\n'
+      + 'the first of the two columns.\n'
+      + 'The right column tells another\n'
+      + 'story entirely and must not be\n'
+      + 'interleaved with the left column\n'
+      + 'when read in visual order.',
+    )
+  })
+
+  it('separates table cells with tabs in visual reading order', async () => {
+    const { text } = await extractText(await getPDF('table.pdf'), {
+      readingOrder: 'visual',
+    })
+
+    expect(text[0]).toBe(
+      'Invoice\n'
+      + 'Item\tQty\tPrice\n'
+      + 'Demolition\t2\t450.00\n'
+      + 'Framing\t5\t1200.00\n'
+      + 'Painting\t3\t300.00',
+    )
+  })
+
+  it('keeps superscripts and subscripts inline in visual reading order', async () => {
+    const { text } = await extractText(await getPDF('superscript.pdf'), {
+      readingOrder: 'visual',
+    })
+
+    expect(text[0]).toBe('E=mc2\nH2O')
+  })
+
+  it('keeps line structure when merging pages in visual reading order', async () => {
+    const { text } = await extractText(await getPDF('links.pdf'), {
+      mergePages: true,
+      readingOrder: 'visual',
+    })
+
+    expect(text).toContain('Links in PDF\n')
+    expect(text).toContain('\n\nAbout Antenna House')
   })
 
   it('extracts structured text items from a PDF', async () => {
