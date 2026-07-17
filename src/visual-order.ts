@@ -31,10 +31,12 @@ export function textInVisualOrder(
 ): string {
   const [viewportA, viewportB, viewportC, viewportD, viewportX, viewportY]
     = viewportTransform as [number, number, number, number, number, number]
-  const positionedItems = items
+  const orientedItems = items
     .filter(item => item.str.length > 0)
     .map((item) => {
-      const [_a, _b, c, d, itemX, itemY] = item.transform
+      const [a, b, c, d, itemX, itemY] = item.transform
+      const advanceX = viewportA * a + viewportC * b
+      const advanceY = viewportB * a + viewportD * b
       const transformedC = viewportA * c + viewportC * d
       const transformedD = viewportB * c + viewportD * d
       const x = viewportA * itemX + viewportC * itemY + viewportX
@@ -45,16 +47,77 @@ export function textInVisualOrder(
       return {
         item,
         fontSize: Number.isFinite(fontSize) && fontSize > 0 ? fontSize : 1,
-        x: Number.isFinite(x) ? x : 0,
-        y: Number.isFinite(y) ? y : 0,
+        pageX: Number.isFinite(x) ? x : 0,
+        pageY: Number.isFinite(y) ? y : 0,
         width: Number.isFinite(item.width) ? item.width : 0,
+        ...advanceAxis(advanceX, advanceY),
       }
     })
-    .sort((left, right) => left.y - right.y || left.x - right.x)
 
-  return readingBlocks(positionedItems)
-    .map(block => renderBlock(block))
+  return orientationGroups(orientedItems)
+    .map((group) => {
+      const positionedItems = group
+        .map(({ item, fontSize, width, pageX, pageY, advanceUnitX, advanceUnitY }) => ({
+          item,
+          fontSize,
+          width,
+          x: advanceUnitX * pageX + advanceUnitY * pageY,
+          y: -advanceUnitY * pageX + advanceUnitX * pageY,
+        }))
+        .sort((left, right) => left.y - right.y || left.x - right.x)
+      return readingBlocks(positionedItems)
+        .map(block => renderBlock(block))
+        .join('\n')
+    })
+    .filter(text => text.length > 0)
     .join('\n')
+}
+
+interface OrientedItem {
+  item: VisualOrderItem
+  fontSize: number
+  pageX: number
+  pageY: number
+  width: number
+  advanceUnitX: number
+  advanceUnitY: number
+}
+
+// Quantizes an item's advance direction to the nearest page axis. Sideways
+// tables embedded in unrotated pages (common in financial reports) advance
+// along the vertical axis and must be read in their own frame.
+function advanceAxis(
+  advanceX: number,
+  advanceY: number,
+): { advanceUnitX: number, advanceUnitY: number } {
+  if (
+    !Number.isFinite(advanceX) || !Number.isFinite(advanceY)
+    || (advanceX === 0 && advanceY === 0)
+  ) {
+    return { advanceUnitX: 1, advanceUnitY: 0 }
+  }
+  if (Math.abs(advanceY) > Math.abs(advanceX)) {
+    return { advanceUnitX: 0, advanceUnitY: Math.sign(advanceY) }
+  }
+  return { advanceUnitX: Math.sign(advanceX), advanceUnitY: 0 }
+}
+
+// Reading order between orientations follows their position on the page:
+// whichever body of text starts higher is read first.
+function orientationGroups(items: OrientedItem[]): OrientedItem[][] {
+  const groups = new Map<string, OrientedItem[]>()
+  for (const orientedItem of items) {
+    const key = `${orientedItem.advanceUnitX},${orientedItem.advanceUnitY}`
+    const group = groups.get(key) ?? []
+    group.push(orientedItem)
+    groups.set(key, group)
+  }
+
+  return [...groups.values()].sort((left, right) => {
+    const top = (group: OrientedItem[]) =>
+      Math.min(...group.map(item => item.pageY - item.fontSize))
+    return top(left) - top(right)
+  })
 }
 
 function readingBlocks(items: PositionedItem[]): PositionedItem[][] {

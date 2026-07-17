@@ -154,6 +154,25 @@ const memo = [
   { text: 'Page 1 of 1', x: 700, y: 560, size: 8 },
 ]
 
+// A sideways table on an unrotated portrait page, as financial reports
+// embed landscape tables and chart labels: the text advances up the page
+// (transform [0, s, -s, 0, x, y]) while the page itself stays upright.
+const sidewaysRows = [
+  ['$1,947', '$1,930', '$1,842'],
+  ['$2,006', '$1,999', '$1,921'],
+  ['$2.31', '$2.23', '$2.18'],
+]
+const sidewaysTable = [
+  { text: 'Portfolio Summary', x: 57, y: 780, size: 14 },
+  ...sidewaysRows.flatMap((row, rowIndex) => row.map((cell, columnIndex) => ({
+    text: cell,
+    size: 8,
+    tm: [0, 1, -1, 0, 200 + rowIndex * 16, 500 + columnIndex * 60],
+  }))),
+]
+writeFileSync(join(fixturesDir, 'sideways-table.pdf'), pdfFromRuns(sidewaysTable))
+console.log('wrote test/fixtures/sideways-table.pdf')
+
 for (const rotate of [0, 90, 180, 270]) {
   const mediaBox = rotate % 180 === 0 ? [0, 0, 842, 595] : [0, 0, 595, 842]
   const inverseViewport = invert(viewportFor(rotate, mediaBox))

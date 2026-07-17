@@ -255,6 +255,14 @@ const rotatedViewports = [
   { rotation: 270, viewport: [0, -1, -1, 0, PAGE_HEIGHT, PAGE_WIDTH] },
 ]
 
+// Pure rotations of the display plane: content authored sideways on a page
+// whose viewport stays upright (sideways tables, rotated chart labels).
+const contentRotations = [
+  { rotation: 90, matrix: [0, 1, -1, 0, 0, 0] },
+  { rotation: 180, matrix: [-1, 0, 0, -1, 0, 0] },
+  { rotation: 270, matrix: [0, -1, 1, 0, 0, 0] },
+]
+
 function chaosCoordinate(random: () => number): number {
   const roll = random()
   if (roll < 0.05) {
@@ -310,6 +318,23 @@ describe('textInVisualOrder properties', () => {
           ),
         }))
         expect(textInVisualOrder(reauthored, viewport), `seed ${seed} rotation ${rotation}`)
+          .toBe(expected)
+      }
+    }
+  })
+
+  it('reads sideways-authored content identically to upright content', () => {
+    for (let seed = 1; seed <= 100; seed++) {
+      const { items, expected } = generatePage(seed)
+      for (const { rotation, matrix } of contentRotations) {
+        const sideways = items.map(item => ({
+          ...item,
+          transform: multiplyMatrices(
+            item.transform,
+            multiplyMatrices(pageViewport, multiplyMatrices(matrix, invertMatrix(pageViewport))),
+          ),
+        }))
+        expect(textInVisualOrder(sideways, pageViewport), `seed ${seed} content rotation ${rotation}`)
           .toBe(expected)
       }
     }
