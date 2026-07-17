@@ -25,12 +25,34 @@ describe('textInVisualOrder', () => {
   })
 
   it('orders a rotated page by its rendered position', () => {
+    // Content authored sideways as on a /Rotate 90 page: a run at display
+    // position (dx, dy) carries the transform [0, s, -s, 0, dy, dx].
     const text = textInVisualOrder([
-      run('second', { x: 20, y: 5, width: 30 }),
-      run('first', { x: 10, y: 5, width: 20 }),
+      { str: 'second', transform: [0, 10, -10, 0, 50, 10], width: 30, dir: 'ltr' },
+      { str: 'first', transform: [0, 10, -10, 0, 20, 10], width: 20, dir: 'ltr' },
     ], [0, 1, 1, 0, 0, 0])
 
     expect(text).toBe('first\nsecond')
+  })
+
+  it('reads a sideways table embedded in a portrait page row by row', () => {
+    const text = textInVisualOrder([
+      { str: '$1,947', transform: [0, 4, -4, 0, 50, 10], width: 12, dir: 'ltr' },
+      { str: '$1,930', transform: [0, 4, -4, 0, 50, 33], width: 12, dir: 'ltr' },
+      { str: '$2,006', transform: [0, 4, -4, 0, 60, 10], width: 12, dir: 'ltr' },
+      { str: '$1,999', transform: [0, 4, -4, 0, 60, 33], width: 12, dir: 'ltr' },
+    ], pageViewport)
+
+    expect(text).toBe('$1,947\t$1,930\n$2,006\t$1,999')
+  })
+
+  it('reads upright text before a sideways block that starts lower', () => {
+    const text = textInVisualOrder([
+      run('Report', { x: 10, y: 95, width: 30 }),
+      { str: 'CONFIDENTIAL', transform: [0, 6, -6, 0, 90, 30], width: 40, dir: 'ltr' },
+    ], pageViewport)
+
+    expect(text).toBe('Report\nCONFIDENTIAL')
   })
 
   it('merges runs with small baseline jitter into one line', () => {

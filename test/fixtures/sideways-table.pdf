@@ -1,0 +1,41 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 476 >>
+stream
+BT /F1 14 Tf 1 0 0 1 57 780 Tm (Portfolio Summary) Tj ET
+BT /F1 8 Tf 0 1 -1 0 200 500 Tm ($1,947) Tj ET
+BT /F1 8 Tf 0 1 -1 0 200 560 Tm ($1,930) Tj ET
+BT /F1 8 Tf 0 1 -1 0 200 620 Tm ($1,842) Tj ET
+BT /F1 8 Tf 0 1 -1 0 216 500 Tm ($2,006) Tj ET
+BT /F1 8 Tf 0 1 -1 0 216 560 Tm ($1,999) Tj ET
+BT /F1 8 Tf 0 1 -1 0 216 620 Tm ($1,921) Tj ET
+BT /F1 8 Tf 0 1 -1 0 232 500 Tm ($2.31) Tj ET
+BT /F1 8 Tf 0 1 -1 0 232 560 Tm ($2.23) Tj ET
+BT /F1 8 Tf 0 1 -1 0 232 620 Tm ($2.18) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000000768 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+838
+%%EOF

@@ -167,7 +167,7 @@ Extracts all text from a PDF. If `mergePages` is set to `true`, the text of all 
 
 By default, text follows the PDF content stream. Set `readingOrder` to `"visual"` to order text from top to bottom and left to right based on its rendered page position. Visual order also infers spaces between separate text runs, which is useful for PDFs whose content stream does not follow their displayed reading order. Runs separated by more than two font sizes of whitespace (e.g. table cells) are separated by a tab instead of a space, and side-by-side prose columns are read column by column. With `mergePages`, visual order joins pages with a blank line instead of collapsing whitespace, so the inferred line structure survives.
 
-Within a line, contiguous right-to-left runs are reordered so the text reads logically; complex bidirectional nesting and vertical (top-to-bottom) writing are not interpreted. Visual order can also only order text that PDF.js extracts: words the document renders without any space between them stay joined.
+Text rotated within a page (sideways tables, rotated chart labels) is grouped by orientation and read in its own frame, ordered by where each orientation starts on the page. Within a line, contiguous right-to-left runs are reordered so the text reads logically; complex bidirectional nesting and vertical (top-to-bottom) writing are not interpreted. Visual order can also only order text that PDF.js extracts: words the document renders without any space between them stay joined.
 
 **Type Declaration**
 

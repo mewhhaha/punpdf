@@ -99,6 +99,7 @@ describe('punpdf', () => {
     'mixed-layout-rotate90.pdf',
     'mixed-layout-rotate180.pdf',
     'mixed-layout-rotate270.pdf',
+    'sideways-table.pdf',
   ]) {
     it(`preserves every non-whitespace character of ${fixture} in visual reading order`, async () => {
       const contentOrder = await extractText(await getPDF(fixture))
@@ -173,6 +174,19 @@ describe('punpdf', () => {
       + 'still under internal\n'
       + 'review by finance.\n'
       + 'Page 1 of 1',
+    )
+  })
+
+  it('reads a sideways table on an upright page without joining its cells', async () => {
+    const { text } = await extractText(await getPDF('sideways-table.pdf'), {
+      readingOrder: 'visual',
+    })
+
+    expect(text[0]).toBe(
+      'Portfolio Summary\n'
+      + '$1,947\t$1,930\t$1,842\n'
+      + '$2,006\t$1,999\t$1,921\n'
+      + '$2.31\t$2.23\t$2.18',
     )
   })
 
