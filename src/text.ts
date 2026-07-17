@@ -109,8 +109,23 @@ async function getPageText(
       .join('')
   }
 
+  return textInVisualOrder(items, page.getViewport({ scale: 1 }).transform)
+}
+
+/** The subset of a PDF.js text item that positions its text on the page. */
+export type VisualOrderItem = Pick<TextItem, 'str' | 'transform' | 'width'>
+
+/**
+ * Assembles page text in visual reading order: top to bottom, left to right,
+ * as positioned by the given viewport transform. Groups items into lines by
+ * baseline and infers spaces between separate text runs.
+ */
+export function textInVisualOrder(
+  items: VisualOrderItem[],
+  viewportTransform: number[],
+): string {
   const [viewportA, viewportB, viewportC, viewportD, viewportX, viewportY]
-    = page.getViewport({ scale: 1 }).transform as [number, number, number, number, number, number]
+    = viewportTransform as [number, number, number, number, number, number]
   const positionedItems = items
     .filter(item => item.str.length > 0)
     .map((item) => {
