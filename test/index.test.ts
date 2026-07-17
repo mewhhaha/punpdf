@@ -187,6 +187,16 @@ describe('punpdf', () => {
     )
   })
 
+  // shadow-text.pdf is deliberately absent from the conservation loop above:
+  // visual order drops duplicated draws that content order keeps.
+  it('keeps one copy of text drawn twice at the same position', async () => {
+    const { text } = await extractText(await getPDF('shadow-text.pdf'), {
+      readingOrder: 'visual',
+    })
+
+    expect(text[0]).toBe('36 Financial Stability Report')
+  })
+
   it('reads a sideways table on an upright page without joining its cells', async () => {
     const { text } = await extractText(await getPDF('sideways-table.pdf'), {
       readingOrder: 'visual',

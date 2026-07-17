@@ -244,6 +244,27 @@ describe('textInVisualOrder', () => {
     expect(text).toContain('kept')
   })
 
+  it('keeps one copy of a run drawn twice at the same position', () => {
+    const text = textInVisualOrder([
+      run('36', { x: 66, y: 80, width: 9.72, fontSize: 8 }),
+      run('36', { x: 66, y: 80, width: 9.72, fontSize: 8 }),
+      run('Financial Stability Report', { x: 90, y: 80, width: 120, fontSize: 8 }),
+    ], pageViewport)
+
+    expect(text).toBe('36 Financial Stability Report')
+  })
+
+  it('joins a small-caps seam despite coincidental column alignment', () => {
+    const text = textInVisualOrder([
+      run('a', { x: 233.59, y: 80, width: 5.6 }),
+      run('pril 2020. The data', { x: 239.29, y: 80, width: 90 }),
+      run('b', { x: 239.04, y: 60, width: 6.2 }),
+      run('b', { x: 239.03, y: 40, width: 6.2 }),
+    ], pageViewport)
+
+    expect(text).toBe('april 2020. The data\nb\nb')
+  })
+
   it('returns an empty string when the page has no visible text', () => {
     expect(textInVisualOrder([], pageViewport)).toBe('')
     expect(textInVisualOrder([run(' ', { x: 10, y: 80, width: 5 })], pageViewport)).toBe('')
