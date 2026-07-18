@@ -822,6 +822,28 @@ describe('html extraction properties', () => {
     expect(htmlRows(html[1]!).map(htmlCells)).toContainEqual(['Date', 'Description', 'Reference', 'Amount'])
   })
 
+  it('uses a new report title instead of inheriting the previous page title', async () => {
+    const firstPage = [
+      { text: 'Prior Report', x: 50, y: 810, size: 12 },
+      ...tableRuns([
+        ['Date', 'Description', 'Reference', 'Amount'],
+        ['05/07/26', 'Wire transfer', '903705070470364', '-320,000.00'],
+      ], { size: 5, starts: [50, 150, 390, 500] }),
+    ]
+    const secondPage = [
+      { text: 'Reports - Account Activity', x: 180, y: 820, size: 6 },
+      { text: 'Account Activity', x: 220, y: 800, size: 6 },
+      ...tableRuns([
+        ['Date', 'Description', 'Reference', 'Amount'],
+        ['05/08/26', 'Card payment', '906627018958577', '-3,661.39'],
+      ], { size: 5, starts: [50, 150, 390, 500], top: 770 }),
+    ]
+    const { html } = await extractHTML(authorPdf(firstPage, [secondPage]))
+
+    expect(html[1]).toContain('>Account Activity</h2>')
+    expect(html[1]).not.toContain('Prior Report (continued)')
+  })
+
   it('restores packed continuation columns from the preceding table schema', async () => {
     const firstPage = [
       { text: 'Boxscore', x: 50, y: 820, size: 12 },
@@ -859,6 +881,47 @@ describe('html extraction properties', () => {
       '232',
       '89.68',
     ])
+  })
+
+  it('does not inherit a wider schema for a newly named table section', async () => {
+    const firstPage = [
+      { text: 'Boxscore', x: 50, y: 820, size: 12 },
+      { text: 'Move-Ins - May 2026', x: 50, y: 800, size: 8 },
+      ...tableRuns([
+        ['Floor Plan', 'Total', 'No Lease', 'Lease', 'Total', 'No NTV', 'Occupancy', 'Average Rent'],
+        ['Group', 'Vacant', 'Application', 'Applications', 'Occupied', 'NTV', 'Percent', 'Rent'],
+        ['A1', '3', '0', '3', '31', '29', '91.18', '1,769.85'],
+      ], {
+        size: 4,
+        starts: [30, 120, 190, 270, 350, 420, 490, 545],
+        top: 780,
+      }),
+    ]
+    const secondPage = [
+      { text: 'Boxscore', x: 50, y: 820, size: 12 },
+      { text: 'Vacancies - June 2026', x: 50, y: 800, size: 8 },
+      ...tableRuns([
+        ['Floor Plan Total', 'No Lease Lease', 'Total No NTV', 'Occupancy', 'Average Rent'],
+        ['Group Vacant', 'Application Applications', 'Occupied NTV', 'Percent', 'Rent'],
+        ['Property Totals:', '281 29', '17 10', '252 232', '89.68'],
+      ], {
+        size: 4,
+        starts: [30, 155, 280, 405, 490],
+        top: 780,
+      }),
+    ]
+    const { html } = await extractHTML(authorPdf(firstPage, [secondPage]))
+    const secondPageRows = htmlRows(html[1]!).map(htmlCells)
+
+    expect(html[1]).toContain('<h2>Vacancies - June 2026</h2>')
+    expect(secondPageRows).toContainEqual([
+      'Floor Plan Total',
+      'No Lease Lease',
+      'Total No NTV',
+      'Occupancy',
+      'Average Rent',
+    ])
+    expect(secondPageRows.every(row => row.length === 5)).toBe(true)
   })
 
   it('does not inflate a complete table to a much wider preceding schema', async () => {
@@ -915,6 +978,36 @@ describe('html extraction properties', () => {
     const { html } = await extractHTML(authorPdf(runs))
 
     expect(html[0]).toContain('<h2>Account Summary</h2>')
+  })
+
+  it('preserves a narrative note beside a report label', async () => {
+    const note = 'This note describes the complete reporting scope across every selected comparison property since June'
+    const runs = [
+      ...tableRuns([
+        ['Market Analysis', 'As of: 6/15/2026'],
+        ['Unit-Level Detail', note],
+      ], {
+        size: 6,
+        starts: [40, 220],
+        top: 820,
+      }),
+      { text: '2023.', x: 220, y: 800, size: 6 },
+      ...tableRuns([
+        ['Property', 'Address', 'Rent'],
+        ['Example', '100 Main Street', '$1,500'],
+      ], {
+        size: 5,
+        starts: [40, 220, 500],
+        top: 775,
+      }),
+    ]
+    const { html } = await extractHTML(authorPdf(runs))
+
+    expect(html[0]).toContain('<h1>Market Analysis</h1>')
+    expect(html[0]).toContain('<h2>Unit-Level Detail</h2>')
+    expect(html[0]).toContain(`${note} 2023.`)
+    expect(html[0]).not.toContain('<h2>2023.</h2>')
+    expect(htmlRows(html[0]!).map(htmlCells)).toContainEqual(['Property', 'Address', 'Rent'])
   })
 
   it('promotes a lower-case table caption to a section heading', async () => {
@@ -997,6 +1090,27 @@ describe('html extraction properties', () => {
     expect(html[0]).not.toContain('Lease Renewal Detail<br>Last')
   })
 
+  it('separates adjacent headers and numeric values merged by visual extraction', async () => {
+    const runs = [
+      { text: 'Resident Activity', x: 40, y: 820, size: 12 },
+      { text: 'Market', x: 350, y: 795, size: 8 },
+      { text: 'Unit', x: 40, y: 780, size: 8 },
+      { text: 'Name', x: 120, y: 780, size: 8 },
+      { text: 'Reason', x: 240, y: 780, size: 8 },
+      { text: 'Rent', x: 350, y: 780, size: 8 },
+      { text: 'Effective Rent', x: 390, y: 778, size: 8 },
+      { text: '101', x: 40, y: 760, size: 8 },
+      { text: 'Example Resident', x: 120, y: 760, size: 8 },
+      { text: 'Transfer', x: 240, y: 760, size: 8 },
+      { text: '2,205.00 2,168.00', x: 350, y: 760, size: 8 },
+    ]
+    const { html } = await extractHTML(authorPdf(runs))
+    const rows = htmlRows(html[0]!).map(htmlCells)
+
+    expect(rows).toContainEqual(['Unit', 'Name', 'Reason', 'Market\nRent', 'Effective Rent'])
+    expect(rows).toContainEqual(['101', 'Example Resident', 'Transfer', '2,205.00', '2,168.00'])
+  })
+
   it('keeps a report preamble outside its stacked-header table', async () => {
     const runs = [
       { text: 'Lease Renewal Detail', x: 200, y: 830, size: 14 },
@@ -1027,6 +1141,123 @@ describe('html extraction properties', () => {
       'Leasing\nConsultant',
     ])
     expect(htmlRows(html[0]!).map(htmlCells)).not.toContainEqual(expect.arrayContaining(['Report created on June 14']))
+  })
+
+  it('keeps a sparse leading record below stacked headers', async () => {
+    const rows = [
+      ['', '', 'Resident', '', 'Charge', 'Credit'],
+      ['Unit', 'Plan', 'Name', 'Code', 'Debit', 'Balance'],
+      ['', '', 'Prior Resident', 'TRASH', '0.00', '25.00'],
+      ['101', 'A1', 'Current Resident', 'RENT', '1,700.00', '400.00 0.00'],
+      ['102', 'A1', 'Following Resident', 'RENT', '1,725.00', '400.00 0.00'],
+    ]
+    const { html } = await extractHTML(authorPdf(tableRuns(rows, {
+      starts: [40, 100, 160, 280, 360, 440],
+      size: 6,
+    })))
+    const renderedRows = htmlRows(html[0]!).map(htmlCells)
+
+    expect(renderedRows[0]).toHaveLength(6)
+    expect(renderedRows).toContainEqual(expect.arrayContaining([
+      'Prior Resident',
+      'TRASH',
+      '0.00',
+      '25.00',
+    ]))
+  })
+
+  it('keeps sparse identifier rows out of a stacked header', async () => {
+    const rows = [
+      ['', '', 'Actual', 'Budget', 'Variance'],
+      ['', '', 'May 2026', 'June 2026', '%'],
+      ['40000-000', 'Income', '', '', ''],
+      ['40001-000', 'Residential Income', '', '', ''],
+      ['', 'Continued description', '', '', ''],
+      ['41000-000', 'Market Rent', '500.00', '525.00', '-4.76'],
+      ['41010-000', 'Loss to Lease', '-25.00', '0.00', 'N/A'],
+    ]
+    const { html } = await extractHTML(authorPdf(tableRuns(rows, {
+      starts: [40, 130, 300, 380, 460],
+      size: 6,
+    })))
+    const renderedRows = htmlRows(html[0]!).map(htmlCells)
+
+    expect(renderedRows[0]).toEqual(['', '', 'Actual\nMay 2026', 'Budget\nJune 2026', 'Variance\n%'])
+    expect(renderedRows).toContainEqual(['40000-000', 'Income', '', '', ''])
+    expect(renderedRows).toContainEqual([
+      '40001-000',
+      'Residential Income\nContinued description',
+      '',
+      '',
+      '',
+    ])
+  })
+
+  it('attaches wrapped trailing financial values to their record', async () => {
+    const starts = [40, 110, 240, 300, 360, 420, 480, 540]
+    const runs = [
+      ...['Code', 'Description', 'Jan', 'Feb', 'Total', 'Budget', 'Variance', '%']
+        .map((text, columnIndex) => ({ text, x: starts[columnIndex]!, y: 790, size: 6 })),
+      { text: '40000', x: starts[0]!, y: 780, size: 6 },
+      { text: 'Income', x: starts[1]!, y: 780, size: 6 },
+      ...['41000', 'Market Rent', '100.00', '110.00', '', '-', '- -25.00', '5.00']
+        .flatMap((text, columnIndex) => text
+          ? [{ text, x: starts[columnIndex]!, y: 770, size: 6 }]
+          : []),
+      { text: '500.00', x: starts[4]!, y: 766, size: 6 },
+      { text: '525.00', x: starts[5]!, y: 766, size: 6 },
+      ...['41010', 'Loss to Lease', '-10.00', '0.00', '90.00', '100.00', '-10.00', '-10.00']
+        .map((text, columnIndex) => ({ text, x: starts[columnIndex]!, y: 745, size: 6 })),
+    ]
+    const { html } = await extractHTML(authorPdf(runs))
+    const renderedRows = htmlRows(html[0]!).map(htmlCells)
+
+    expect(renderedRows).toContainEqual([
+      '41000',
+      'Market Rent',
+      '100.00',
+      '110.00',
+      '500.00',
+      '525.00',
+      '-25.00',
+      '5.00',
+    ])
+  })
+
+  it('uses a separated final header row to unpack merged record columns', async () => {
+    const starts = [40, 100, 145, 260, 380, 500]
+    const runs = [
+      { text: 'Lease Renewal Detail', x: 200, y: 830, size: 14 },
+      ...tableRuns([
+        ['', '', 'Report created on June 14', '', '', '06/14/2026'],
+        ['', '', 'Statuses: Current residents', '', '', ''],
+        ['', '', 'Unit Number', '', '', ''],
+      ], {
+        size: 5,
+        starts,
+        top: 790,
+      }),
+      ...tableRuns([
+        ['', '', 'Last', '', 'New', ''],
+        ['Unit', 'Floorplan', 'Name', 'Actual rent', 'New rent', 'Consultant'],
+      ], {
+        size: 5,
+        starts,
+        top: 750,
+      }),
+      { text: '1601', x: starts[0]!, y: 730, size: 5 },
+      { text: 'TA1', x: starts[1]!, y: 730, size: 5 },
+      { text: 'Scott Haugh', x: starts[2]!, y: 730, size: 5 },
+      { text: '1969.00', x: starts[3]!, y: 730, size: 5 },
+      { text: '2028.00', x: starts[4]!, y: 730, size: 5 },
+      { text: 'Tonirhea', x: starts[5]!, y: 730, size: 5 },
+    ]
+    const { html } = await extractHTML(authorPdf(runs))
+    const rows = htmlRows(html[0]!).map(htmlCells)
+
+    expect(rows).toContainEqual(['1601', 'TA1', 'Scott Haugh', '1969.00', '2028.00', 'Tonirhea'])
+    expect(html[0]).toContain('<p>Statuses: Current residents</p>')
+    expect(html[0]).not.toContain('Statuses: Current residents<br>')
   })
 
   it('keeps labeled report parameters outside a stacked table header', async () => {
@@ -1265,6 +1496,28 @@ describe('html extraction properties', () => {
     expect(renderedRows).toContainEqual(['Made Ready:', '16', '55.17', '6'])
   })
 
+  it('uses header-only columns as titles for adjacent tables', async () => {
+    const runs = [
+      { text: 'Portfolio Status', x: 50, y: 825, size: 12 },
+      ...tableRuns([
+        ['Status', 'Availability Summary', 'Number', '%', 'Status', 'Readiness Summary', 'Number', '%', 'Available'],
+        ['Vacant:', '', '29', '10.32', 'Ready:', '', '16', '55.17', '6'],
+        ['Leased:', '', '10', '3.56', 'Not Ready:', '', '13', '44.83', '11'],
+      ], {
+        size: 5,
+        starts: [20, 90, 220, 290, 320, 380, 470, 525, 575],
+        top: 790,
+      }),
+    ]
+    const { html } = await extractHTML(authorPdf(runs))
+    const renderedRows = htmlRows(html[0]!).map(htmlCells)
+
+    expect(html[0]).toContain('<h3>Availability Summary</h3>')
+    expect(html[0]).toContain('<h3>Readiness Summary</h3>')
+    expect(renderedRows).toContainEqual(['Vacant:', '29', '10.32'])
+    expect(renderedRows).toContainEqual(['Ready:', '16', '55.17', '6'])
+  })
+
   it('separates repeated column groups into parallel tables', async () => {
     const runs = [
       { text: 'Checks', x: 30, y: 825, size: 12 },
@@ -1315,8 +1568,9 @@ describe('html extraction properties', () => {
     const { html } = await extractHTML(authorPdf(outline))
 
     expect(html[0]).toContain('<h1>Contents</h1>')
-    expect(html[0]!.match(/<ol>/g)).toHaveLength(3)
-    expect(html[0]).toContain('<li>First Section\n<ol>')
+    expect(html[0]!.match(/<ol(?: type="a")?>/g)).toHaveLength(3)
+    expect(html[0]).toContain('<li>First Section\n<ol type="a">')
+    expect(html[0]!.match(/<ol type="a">/g)).toHaveLength(2)
     expect(html[0]).toContain('<li>First Topic</li>')
     expect(html[0]).toContain('<li>Fourth Topic</li>')
   })

@@ -1,4 +1,5 @@
 import type { DocumentInitParameters, PDFDocumentProxy } from 'pdfjs-dist/types/src/display/api'
+import type { StructuredTextItem } from './text'
 import { extractText, extractTextItems } from './text'
 import { getDocumentProxy, isPDFDocumentProxy } from './utils'
 
@@ -75,19 +76,187 @@ export async function extractHTML(
     }
     if (hasHierarchicalOutline) {
       for (const entry of alphabeticOutlineEntries) {
-        lines[entry.lineIndex] = `   ${entry.ordinal}. ${entry.text}`
+        lines[entry.lineIndex]
+          = `   ${String.fromCharCode(96 + entry.ordinal)}. ${entry.text}`
       }
     }
+    const pageItems = extractedItems.items[pageIndex] ?? []
     const fontSizesByText = new Map<string, number[]>()
-    for (const item of extractedItems.items[pageIndex] ?? []) {
+    const itemsByText = new Map<string, typeof pageItems>()
+    for (const item of pageItems) {
       const sizes = fontSizesByText.get(item.str) ?? []
       sizes.push(item.fontSize)
       fontSizesByText.set(item.str, sizes)
+      const matchingItems = itemsByText.get(item.str) ?? []
+      matchingItems.push(item)
+      itemsByText.set(item.str, matchingItems)
     }
     const pageFontSizes = [...fontSizesByText.values()]
       .flat()
       .sort((left, right) => left - right)
     const medianPageFontSize = pageFontSizes[Math.floor(pageFontSizes.length / 2)] ?? 0
+    const rawTableRunCount = lines.reduce((count, line, sourceLineIndex) =>
+      count + Number(line.includes('\t') && !(lines[sourceLineIndex - 1] ?? '').includes('\t')), 0)
+    const maximumRawColumnCount = Math.max(
+      0,
+      ...lines.filter(line => line.includes('\t')).map(line => line.split('\t').length),
+    )
+    const sparseAxisLineCount = lines.filter((line) => {
+      const values = line.split('\t').map(value => value.trim()).filter(Boolean)
+      const axisValues = values.filter(value =>
+        /^(?:\$?[\d,.]+%?|[A-Z][a-z]{2})$/.test(value))
+      return values.length > 0
+        && values.length <= 4
+        && axisValues.length >= Math.ceil(values.length * 0.7)
+    }).length
+    const hasDenseSpatialCharts = lines.length >= 80
+      && rawTableRunCount >= 8
+      && maximumRawColumnCount >= 12
+      && sparseAxisLineCount >= 15
+    if (hasDenseSpatialCharts) {
+      const firstRow = lines[0]!.split('\t').map(value => value.trim()).filter(Boolean)
+      const title = firstRow[0]
+      const metadata = firstRow.slice(1)
+      return [
+        ...(title ? [`# ${title}`, ''] : []),
+        ...(metadata.length > 0 ? [metadata.join(' '), ''] : []),
+        ':::spatial',
+        ...lines.slice(1),
+        ':::',
+      ].join('\n').trim()
+    }
+    const numericMatrixItems = pageItems.filter(item =>
+      /^[+\-]?\$?\(?\d[\d,.]*\)?%?$/.test(item.str))
+      .sort((left, right) => right.y - left.y)
+    const numericMatrixBaselines: Array<{
+      y: number
+      items: typeof pageItems
+    }> = []
+    for (const item of numericMatrixItems) {
+      const existingBaseline = numericMatrixBaselines.find(baseline =>
+        Math.abs(baseline.y - item.y) <= item.fontSize * 0.3)
+      if (existingBaseline) {
+        existingBaseline.items.push(item)
+      }
+      else {
+        numericMatrixBaselines.push({ y: item.y, items: [item] })
+      }
+    }
+    const matrixWidthCounts = numericMatrixBaselines.reduce((counts, baseline) => {
+      if (baseline.items.length >= 5 && baseline.items.length <= 12) {
+        counts.set(baseline.items.length, (counts.get(baseline.items.length) ?? 0) + 1)
+      }
+      return counts
+    }, new Map<number, number>())
+    const matrixWidth = [...matrixWidthCounts]
+      .sort((left, right) => right[1] - left[1])[0]?.[0]
+    const consistentMatrixRows = matrixWidth === undefined
+      ? []
+      : numericMatrixBaselines
+          .filter(baseline => baseline.items.length === matrixWidth)
+          .sort((left, right) => right.y - left.y)
+    const firstMatrixValueX = Math.min(
+      Infinity,
+      ...consistentMatrixRows.flatMap(row => row.items.map(item => item.x)),
+    )
+    const matrixDescriptionItems = pageItems.filter(item =>
+      item.x >= firstMatrixValueX * 0.5
+      && item.x < firstMatrixValueX
+      && /[a-z]/i.test(item.str)
+      && consistentMatrixRows.some(row =>
+        Math.abs(row.y - item.y) <= item.fontSize * 2))
+    const topMatrixBaseline = consistentMatrixRows[0]?.y
+    const matrixHeaderItems = topMatrixBaseline === undefined
+      ? []
+      : pageItems
+          .filter(item =>
+            item.x > firstMatrixValueX
+            && item.y > topMatrixBaseline + medianPageFontSize * 2
+            && item.y < topMatrixBaseline + medianPageFontSize * 10
+            && /[a-z]/i.test(item.str))
+          .sort((left, right) => left.x - right.x)
+    const hasPositionedMatrix = rawTableRunCount >= 4
+      && lines.length <= 60
+      && consistentMatrixRows.length >= 5
+      && firstMatrixValueX > 250
+      && matrixDescriptionItems.length >= consistentMatrixRows.length * 2
+      && matrixHeaderItems.length === matrixWidth
+    if (hasPositionedMatrix) {
+      const structuredMatrixLines: string[] = []
+      const firstRow = lines[0]!.split('\t').map(value => value.trim()).filter(Boolean)
+      if (firstRow[0]) {
+        structuredMatrixLines.push(`# ${firstRow[0]}`, '')
+      }
+      if (firstRow.length > 1) {
+        structuredMatrixLines.push(firstRow.slice(1).join(' '), '')
+      }
+      if (lines[1]) {
+        structuredMatrixLines.push(`## ${lines[1]}`, '')
+      }
+      if (lines[2]) {
+        structuredMatrixLines.push(lines[2], '')
+      }
+
+      const escapeCell = (value: string) => value
+        .replaceAll('\\', '\\\\')
+        .replaceAll('|', '\\|')
+      const renderMatrixRow = (values: string[]) =>
+        `| ${values.map(escapeCell).join(' | ')} |`
+      const matrixHeader = ['Category', 'Description', ...matrixHeaderItems.map(item => item.str)]
+      structuredMatrixLines.push(
+        renderMatrixRow(matrixHeader),
+        renderMatrixRow(matrixHeader.map(() => '---')),
+      )
+      const matrixDescriptions: string[] = []
+      for (const [matrixRowIndex, matrixRow] of consistentMatrixRows.entries()) {
+        const precedingRow = consistentMatrixRows[matrixRowIndex - 1]
+        const followingRow = consistentMatrixRows[matrixRowIndex + 1]
+        const upperBoundary = precedingRow
+          ? (precedingRow.y + matrixRow.y) / 2
+          : matrixRow.y + medianPageFontSize * 2
+        const lowerBoundary = followingRow
+          ? (followingRow.y + matrixRow.y) / 2
+          : matrixRow.y - medianPageFontSize * 2
+        const category = pageItems
+          .filter(item =>
+            item.x < firstMatrixValueX * 0.5
+            && item.y <= upperBoundary
+            && item.y > lowerBoundary
+            && item.str.length <= 30
+            && /[a-z]/i.test(item.str))
+          .sort((left, right) =>
+            Math.abs(left.y - matrixRow.y) - Math.abs(right.y - matrixRow.y))[0]
+          ?.str ?? ''
+        const description = pageItems
+          .filter(item =>
+            item.x >= firstMatrixValueX * 0.5
+            && item.x < firstMatrixValueX
+            && item.y <= upperBoundary
+            && item.y > lowerBoundary
+            && /[a-z]/i.test(item.str))
+          .sort((left, right) => right.y - left.y || left.x - right.x)
+          .map(item => item.str)
+          .join(' ')
+        matrixDescriptions.push(description)
+        const values = matrixRow.items
+          .sort((left, right) => left.x - right.x)
+          .map(item => item.str)
+        structuredMatrixLines.push(renderMatrixRow([
+          category || description,
+          category ? description : '',
+          ...values,
+        ]))
+      }
+
+      const finalTabularLineIndex = lines.findLastIndex(line => line.includes('\t'))
+      const finalDescription = matrixDescriptions.at(-1) ?? ''
+      for (const trailingLine of lines.slice(finalTabularLineIndex + 1)) {
+        if (trailingLine && !finalDescription.includes(trailingLine)) {
+          structuredMatrixLines.push('', trailingLine)
+        }
+      }
+      return structuredMatrixLines.join('\n').trim()
+    }
     const inferredHeadingLines = new Set<number>()
     const firstTextLine = lines.findIndex(line => line.length > 0)
     const reportingPeriodIndex = lines.findIndex((line, lineIndex) =>
@@ -155,6 +324,7 @@ export async function extractHTML(
     const structuredLines: string[] = []
     let pageHasHeading = inferredHeadingLines.size > 0
     let previousTableWasPreamble = false
+    let previousTableBottomBaseline = Infinity
     let tableRunCount = 0
     let lineIndex = 0
 
@@ -196,7 +366,8 @@ export async function extractHTML(
           && introducesTable
           && !metadataLine
           && fontSizesByText.has(line)
-          && words.length >= 2
+          && (words.length >= 2
+            || (words.length === 1 && /\d{1,2}\/\d{1,2}\/\d{2,4}/.test(line)))
           && words.length <= 8
           && !/^(?:(?:Grand )?Total\b|\d+[.)]?\s)/i.test(line)
         const namesCodedTableSection = pageHasHeading
@@ -249,7 +420,6 @@ export async function extractHTML(
           cell.trim().replaceAll('\\', '\\\\').replaceAll('|', '\\|')))
         lineIndex++
       }
-      const pageItems = extractedItems.items[pageIndex] ?? []
       const exactItemsForCell = (cell: string) => cell
         .split('<br>')
         .map(segment => segment.replace(/\\([\\|#])/g, '$1'))
@@ -291,6 +461,48 @@ export async function extractHTML(
         maximumContinuationGap: medianPageFontSize * 1.2,
         visualPositions: rowVisualPositions,
       }
+      const narrativePreamble = tableRunCount === 0
+        && rows.length <= 2
+        && rows.every(row => row.filter(Boolean).length <= 3)
+        && rows.some(row => row.some(cell => cell.length > 80))
+        && rows.every(row => row.filter(cell => /\d/.test(cell)).length < 2)
+      if (narrativePreamble) {
+        const finalRow = rows.at(-1)!
+        const finalCellIndex = finalRow.findLastIndex(Boolean)
+        const followingLine = lines[lineIndex] ?? ''
+        if (
+          finalCellIndex >= 0
+          && followingLine.length > 0
+          && !followingLine.includes('\t')
+          && !/[.!?]$/.test(finalRow[finalCellIndex]!)
+        ) {
+          finalRow[finalCellIndex] = `${finalRow[finalCellIndex]} ${followingLine}`
+          lineIndex++
+        }
+        for (const [rowIndex, row] of rows.entries()) {
+          const values = row.filter(Boolean)
+          const pairedNarrative = values.length >= 2 && values.some(value => value.length > 80)
+          for (const [valueIndex, value] of values.entries()) {
+            const isPageTitle = rowIndex === 0
+              && valueIndex === 0
+              && !pageHasHeading
+              && value.length <= 100
+              && !/[.!?;]$/.test(value)
+            const isNarrativeLabel = rowIndex > 0
+              && valueIndex === 0
+              && pairedNarrative
+              && value.length <= 80
+            if (isPageTitle || isNarrativeLabel) {
+              structuredLines.push(`${isPageTitle ? '#' : '##'} ${value}`, '')
+              pageHasHeading = true
+            }
+            else {
+              structuredLines.push(value, '')
+            }
+          }
+        }
+        continue
+      }
       let trailingTableFurniture: string[] = []
       previousTableWasPreamble = rows.length <= 2
         && rows.every(row => row.every(cell =>
@@ -302,6 +514,7 @@ export async function extractHTML(
       const precedingStandaloneLabel = [...structuredLines]
         .reverse()
         .find(structuredLine => structuredLine.length > 0)
+      const selectedTableBaselines: number[] = []
 
       for (let rowIndex = 1; rowIndex < rows.length; rowIndex++) {
         const row = rows[rowIndex]!
@@ -325,15 +538,81 @@ export async function extractHTML(
       }
 
       const rowBaseline = (row: string[]): number | undefined => {
-        const values = row.filter(Boolean).map(cell => cell.replace(/\\([\\|#])/g, '$1'))
-        const matchesByValue = values.map(value =>
-          pageItems.filter(item => item.str === value))
-          .filter(matches => matches.length > 0)
-          .sort((left, right) => left.length - right.length)
-        const baselines = (matchesByValue[0] ?? [])
-          .map(item => item.y)
-          .sort((left, right) => left - right)
-        return baselines[Math.floor(baselines.length / 2)]
+        const values = [...new Set(row
+          .filter(Boolean)
+          .map(cell => cell.replace(/\\([\\|#])/g, '$1')))]
+        const candidates = values.flatMap(value => itemsByText.get(value) ?? [])
+        const followingCandidates = candidates.filter(candidate =>
+          candidate.y < previousTableBottomBaseline - candidate.fontSize * 0.2)
+        const candidatesInReadingOrder = followingCandidates.length > 0
+          ? followingCandidates
+          : candidates
+        const baseline = candidatesInReadingOrder
+          .map(candidate => ({
+            baseline: candidate.y,
+            exactCharacters: values.reduce((count, value) => count + Math.max(
+              0,
+              ...(itemsByText.get(value) ?? [])
+                .filter(item => Math.abs(item.y - candidate.y) <= item.fontSize * 0.3)
+                .map(item => item.str.length),
+            ), 0),
+            matchedValues: values.filter(value => (itemsByText.get(value) ?? []).some(item =>
+              Math.abs(item.y - candidate.y) <= item.fontSize * 0.3))
+              .length,
+          }))
+          .sort((left, right) =>
+            right.matchedValues - left.matchedValues
+            || right.exactCharacters - left.exactCharacters)[0]
+          ?.baseline
+        if (baseline !== undefined) {
+          selectedTableBaselines.push(baseline)
+        }
+        return baseline
+      }
+      let separatedTablePreamble = false
+      const firstLikelyRecordRowIndex = rows.findIndex((row) => {
+        const populatedCells = row.filter(Boolean)
+        const numericCells = populatedCells.filter(isNumericCell)
+        return populatedCells.length >= 2
+          && numericCells.length >= Math.max(3, Math.ceil(populatedCells.length / 3))
+      })
+      if (firstLikelyRecordRowIndex > 1) {
+        const headerBaselines = rows.slice(0, firstLikelyRecordRowIndex)
+          .map(row => rowBaseline(row))
+        let headerStart = headerBaselines.slice(1)
+          .map((baseline, index) => ({
+            gap: baseline === undefined || headerBaselines[index] === undefined
+              ? 0
+              : Math.abs(baseline - headerBaselines[index]!),
+            rowIndex: index + 1,
+          }))
+          .filter(candidate =>
+            candidate.rowIndex >= 2
+            && candidate.gap > medianPageFontSize * 1.8)
+          .sort((left, right) => right.rowIndex - left.rowIndex)[0]
+          ?.rowIndex ?? 0
+        const firstRecordWidth = rows[firstLikelyRecordRowIndex]!.length
+        const firstRecordPopulation = rows[firstLikelyRecordRowIndex]!.filter(Boolean).length
+        const preambleContainsWideHeader = rows.slice(0, headerStart).some(row =>
+          row.length >= firstRecordWidth * 0.75
+          && row.filter(Boolean).length >= Math.max(4, Math.ceil(firstRecordPopulation / 2)))
+        if (preambleContainsWideHeader) {
+          headerStart = 0
+        }
+        const preambleRows = rows.splice(0, headerStart)
+        separatedTablePreamble = preambleRows.length > 0
+        for (const preambleRow of preambleRows) {
+          const preamble = preambleRow.filter(Boolean).join(' ')
+          if (!preamble) {
+            continue
+          }
+          if (structuredLines.at(-1) !== '') {
+            structuredLines.push('')
+          }
+          const isOnlyPreamble = preambleRows.length === 1 && !pageHasHeading
+          structuredLines.push(isOnlyPreamble ? `# ${preamble}` : preamble, '')
+          pageHasHeading ||= isOnlyPreamble
+        }
       }
       const trailingRow = rows.at(-1)
       const precedingRow = rows.at(-2)
@@ -349,21 +628,88 @@ export async function extractHTML(
         }
       }
 
-      const leadingRow = rows[0]
+      const firstRecordAfterPreamble = rows.findIndex((row) => {
+        const populatedCells = row.filter(Boolean)
+        const numericCells = populatedCells.filter(isNumericCell)
+        return populatedCells.length >= 2
+          && numericCells.length >= Math.max(3, Math.ceil(populatedCells.length / 3))
+      })
+      const recordsContainPackedColumns = firstRecordAfterPreamble >= 0
+        && rows.slice(firstRecordAfterPreamble).some(row => row.some(cell =>
+          /^(?:[+\-]?\$?\(?\d[\d,.]*\)?\s+)+[+\-]?\$?\(?\d[\d,.]*\)?$/.test(cell)))
+      let closestHeaderRowIndex = Math.max(0, firstRecordAfterPreamble - 1)
+      while (
+        closestHeaderRowIndex > 0
+        && rows[closestHeaderRowIndex]!.some(isNumericCell)
+      ) {
+        closestHeaderRowIndex--
+      }
+      const headerAnchorRowIndex = firstRecordAfterPreamble < 0
+        ? rows.length - 1
+        : separatedTablePreamble || recordsContainPackedColumns
+          ? closestHeaderRowIndex
+          : 0
+      const leadingRow = rows[headerAnchorRowIndex]
       if (leadingRow) {
-        const separatedLabels = leadingRow.flatMap((cell, columnIndex) => {
-          const combinedLabel = cell.replace(/\\([\\|#])/g, '$1')
+        const leadingRowBaseline = rowBaseline(leadingRow)
+        const separatedCellPairs = (combinedLabel: string, referenceBaseline?: number) => {
           const possibleParts = pageItems.filter(item =>
-            item.str.trim().length > 0 && combinedLabel.includes(item.str))
-          const separatedPair = possibleParts.flatMap(left => possibleParts.flatMap((right) => {
-            const sameLine = Math.abs(left.y - right.y) <= Math.max(left.fontSize, right.fontSize) * 0.2
+            item.str.trim().length > 0
+            && combinedLabel.includes(item.str)
+            && (referenceBaseline === undefined
+              || Math.abs(item.y - referenceBaseline) <= item.fontSize * 2))
+          const directPairs = possibleParts.flatMap(left => possibleParts.flatMap((right) => {
+            const sameLine = Math.abs(left.y - right.y)
+              <= Math.max(left.fontSize, right.fontSize) * 0.4
             const gap = right.x - (left.x + left.width)
             return sameLine
-              && gap >= Math.max(left.fontSize, right.fontSize) * 1.5
+              && gap >= Math.max(left.fontSize, right.fontSize) * 0.5
               && `${left.str} ${right.str}` === combinedLabel
               ? [{ left, right, gap }]
               : []
-          })).sort((left, right) => right.gap - left.gap)[0]
+          }))
+          const stackedLeftPairs = possibleParts.flatMap((right) => {
+            const leftLabel = combinedLabel.slice(0, -right.str.length).trim()
+            if (!leftLabel || `${leftLabel} ${right.str}` !== combinedLabel) {
+              return []
+            }
+            const leftParts: typeof pageItems = []
+            let remainingLabel = leftLabel
+            while (remainingLabel) {
+              const nextPart = possibleParts
+                .filter(item =>
+                  !leftParts.includes(item)
+                  && item.x < right.x
+                  && Math.abs(item.y - right.y)
+                  <= Math.max(item.fontSize, right.fontSize) * 2
+                  && (remainingLabel === item.str || remainingLabel.startsWith(`${item.str} `)))
+                .sort((left, candidate) => candidate.str.length - left.str.length)[0]
+              if (!nextPart) {
+                return []
+              }
+              leftParts.push(nextPart)
+              remainingLabel = remainingLabel.slice(nextPart.str.length).trimStart()
+            }
+            const leftX = Math.min(...leftParts.map(item => item.x))
+            const leftRight = Math.max(...leftParts.map(item => item.x + item.width))
+            const gap = right.x - leftRight
+            if (gap < Math.max(...leftParts.map(item => item.fontSize), right.fontSize) * 0.5) {
+              return []
+            }
+            const left = {
+              ...leftParts[0]!,
+              str: leftLabel,
+              x: leftX,
+              width: leftRight - leftX,
+            }
+            return [{ left, right, gap }]
+          })
+          return [...directPairs, ...stackedLeftPairs]
+        }
+        const separatedLabels = leadingRow.flatMap((cell, columnIndex) => {
+          const combinedLabel = cell.replace(/\\([\\|#])/g, '$1')
+          const separatedPair = separatedCellPairs(combinedLabel, leadingRowBaseline)
+            .sort((left, right) => right.gap - left.gap)[0]
           return separatedPair ? [{ columnIndex, ...separatedPair }] : []
         })
         const leadingLabels = leadingRow
@@ -422,9 +768,14 @@ export async function extractHTML(
               ?.targetColumn
           }
 
-          const targetColumn = headerColumns.findLastIndex(headerColumn =>
-            headerColumn.x <= positionedItem.x + headerColumn.fontSize * 0.5)
-          return targetColumn >= 0 ? targetColumn : 0
+          const itemCenter = positionedItem.x + positionedItem.width / 2
+          return headerColumns
+            .map((headerColumn, targetColumn) => ({
+              distance: Math.abs(headerColumn.x + headerColumn.width / 2 - itemCenter),
+              targetColumn,
+            }))
+            .sort((left, right) => left.distance - right.distance)[0]
+            ?.targetColumn
         }
         const sourceColumnCount = Math.max(...rows.map(row => row.length))
         const bodyItems = headerBaseline === undefined
@@ -435,7 +786,7 @@ export async function extractHTML(
         const sourceColumnTargets = Array.from(
           { length: sourceColumnCount },
           (_, columnIndex) => {
-            const values = rows.slice(1)
+            const values = rows.slice(headerAnchorRowIndex + 1)
               .map(row => (row[columnIndex] ?? '').replace(/\\([\\|#])/g, '$1'))
               .filter(Boolean)
             const positions = values.flatMap((value) => {
@@ -443,7 +794,7 @@ export async function extractHTML(
               const matchingItems = exactMatches.length > 0
                 ? exactMatches
                 : bodyItems.filter(item =>
-                    item.str.trim().length >= 4 && value.includes(item.str))
+                    item.str.trim().length >= 3 && value.includes(item.str))
               return matchingItems.map(item => ({
                 right: item.x + item.width,
                 x: item.x,
@@ -476,32 +827,79 @@ export async function extractHTML(
         const populatedSourceColumns = Array.from(
           { length: sourceColumnCount },
           (_, columnIndex) => columnIndex,
-        ).filter(columnIndex => rows.slice(1).some(row => (row[columnIndex] ?? '').length > 0))
-        const leadingRowIntroducesRecords = (rows[1] ?? [])
+        ).filter(columnIndex => rows.slice(headerAnchorRowIndex + 1)
+          .some(row => (row[columnIndex] ?? '').length > 0))
+        const leadingRowIntroducesRecords = (rows[headerAnchorRowIndex + 1] ?? [])
           .filter(isNumericCell)
           .length >= 2
         const headerContainsUnrepresentedColumns
           = populatedSourceColumns.length < headerColumns.length
-        const canRebuildColumns = (separatedLabels.length > 0 || headerContainsUnrepresentedColumns)
-          && leadingRowIntroducesRecords
-          && headerColumns.length >= 2
-          && populatedSourceColumns.every(columnIndex =>
-            sourceColumnTargets[columnIndex] !== undefined)
+        const canRebuildColumns = (
+          separatedLabels.length > 0
+          || headerContainsUnrepresentedColumns
+        )
+        && leadingRowIntroducesRecords
+        && headerColumns.length >= 2
+        && populatedSourceColumns.every(columnIndex =>
+          sourceColumnTargets[columnIndex] !== undefined)
         if (canRebuildColumns) {
-          const rebuiltRows = rows.slice(1).map((row) => {
+          const rebuiltRows = rows.map((row, rowIndex) => {
+            if (rowIndex === headerAnchorRowIndex) {
+              return headerColumns.map(item => item.str
+                .replaceAll('\\', '\\\\')
+                .replaceAll('|', '\\|'))
+            }
             const rebuiltRow = Array.from<string>({ length: headerColumns.length }).fill('')
+            const claimedRowItems = new Set<(typeof pageItems)[number]>()
             for (const [sourceColumn, value] of row.entries()) {
               if (!value) {
                 continue
               }
               const sourceValue = value.replace(/\\([\\|#])/g, '$1')
-              const exactMatches = bodyItems.filter(item => item.str === sourceValue)
-              const componentMatches = exactMatches.length > 0
-                ? exactMatches
-                : bodyItems.filter(item =>
-                    item.str.trim().length >= 4 && sourceValue.includes(item.str))
+              const candidateItems = rowIndex < headerAnchorRowIndex ? pageItems : bodyItems
+              const baseline = rowBaseline(row)
+              const exactMatches = candidateItems.filter(item =>
+                item.str === sourceValue
+                && !claimedRowItems.has(item)
+                && (baseline === undefined || Math.abs(item.y - baseline) <= item.fontSize * 0.3))
+              const exactMatch = exactMatches.sort((left, right) => left.x - right.x)[0]
+              if (exactMatch) {
+                claimedRowItems.add(exactMatch)
+                const targetColumn = targetColumnForItem(exactMatch)
+                  ?? sourceColumnTargets[sourceColumn]
+                const numericParts = sourceValue.split(/\s+/).filter(Boolean)
+                const canSplitNumericParts = numericParts.length >= 2
+                  && numericParts.some(part => /\d/.test(part))
+                  && numericParts.every(isNumericCell)
+                if (targetColumn !== undefined && canSplitNumericParts) {
+                  const firstTargetColumn = Math.min(
+                    targetColumn,
+                    headerColumns.length - numericParts.length,
+                  )
+                  for (const [partIndex, part] of numericParts.entries()) {
+                    rebuiltRow[firstTargetColumn + partIndex] = part
+                  }
+                  continue
+                }
+                if (targetColumn !== undefined) {
+                  rebuiltRow[targetColumn] = rebuiltRow[targetColumn]
+                    ? `${rebuiltRow[targetColumn]} ${value}`
+                    : value
+                }
+                continue
+              }
+              const sourceParts = sourceValue.split(/\s+/).filter(Boolean)
+              const componentMatches = candidateItems
+                .filter(item =>
+                  !claimedRowItems.has(item)
+                  && (sourceParts.includes(item.str)
+                    || (item.str.trim().length >= 3 && sourceValue.includes(item.str)))
+                  && (baseline === undefined || Math.abs(item.y - baseline) <= item.fontSize * 0.3))
+                .sort((left, right) => left.x - right.x)
+                .slice(0, sourceParts.length)
               const componentTargets = new Map<number, string[]>()
               for (const component of componentMatches) {
+                claimedRowItems.add(component)
                 const targetColumn = targetColumnForItem(component)
                 if (targetColumn === undefined) {
                   continue
@@ -535,9 +933,6 @@ export async function extractHTML(
           rows.splice(
             0,
             rows.length,
-            headerColumns.map(item => item.str
-              .replaceAll('\\', '\\\\')
-              .replaceAll('|', '\\|')),
             ...rebuiltRows,
           )
           let continuationBaseline = rowBaseline(rows.at(-1)!)
@@ -600,27 +995,58 @@ export async function extractHTML(
         else {
           for (const separatedLabel of separatedLabels.sort((left, right) =>
             right.columnIndex - left.columnIndex)) {
-            const bodyValuePositions = rows.slice(1).flatMap((row) => {
+            const valuePositions = rows.flatMap((row, rowIndex) => {
+              if (rowIndex === headerAnchorRowIndex) {
+                return []
+              }
               const value = (row[separatedLabel.columnIndex] ?? '').replace(/\\([\\|#])/g, '$1')
               if (!value) {
                 return []
               }
               return pageItems.filter(item => item.str === value).map(item => item.x)
             }).sort((left, right) => left - right)
-            const bodyPosition = bodyValuePositions[Math.floor(bodyValuePositions.length / 2)]
-            if (bodyPosition === undefined) {
-              continue
-            }
-            const valuesAlignWithRightLabel = Math.abs(bodyPosition - separatedLabel.right.x)
-              < Math.abs(bodyPosition - separatedLabel.left.x)
             leadingRow.splice(
               separatedLabel.columnIndex,
               1,
               separatedLabel.left.str,
               separatedLabel.right.str,
             )
-            for (const row of rows.slice(1)) {
+            for (const [rowIndex, row] of rows.entries()) {
+              if (rowIndex === headerAnchorRowIndex) {
+                continue
+              }
               const value = row[separatedLabel.columnIndex] ?? ''
+              const numericParts = value.split(/\s+/).filter(Boolean)
+              if (
+                numericParts.length === 2
+                && numericParts.some(part => /\d/.test(part))
+                && numericParts.every(isNumericCell)
+              ) {
+                row.splice(separatedLabel.columnIndex, 1, ...numericParts)
+                continue
+              }
+              const separatedValue = separatedCellPairs(
+                value.replace(/\\([\\|#])/g, '$1'),
+                rowBaseline(row),
+              )
+                .sort((left, right) =>
+                  Math.abs(left.left.x - separatedLabel.left.x)
+                  + Math.abs(left.right.x - separatedLabel.right.x)
+                  - Math.abs(right.left.x - separatedLabel.left.x)
+                  - Math.abs(right.right.x - separatedLabel.right.x))[0]
+              if (separatedValue) {
+                row.splice(
+                  separatedLabel.columnIndex,
+                  1,
+                  separatedValue.left.str,
+                  separatedValue.right.str,
+                )
+                continue
+              }
+              const valuePosition = valuePositions[Math.floor(valuePositions.length / 2)]
+              const valuesAlignWithRightLabel = valuePosition !== undefined
+                && Math.abs(valuePosition - separatedLabel.right.x)
+                < Math.abs(valuePosition - separatedLabel.left.x)
               row.splice(
                 separatedLabel.columnIndex,
                 1,
@@ -628,6 +1054,31 @@ export async function extractHTML(
               )
             }
           }
+        }
+      }
+
+      const availableSourceColumnCount = Math.max(...rows.map(row => row.length))
+      for (const row of rows) {
+        for (let columnIndex = 0; columnIndex < row.length; columnIndex++) {
+          const value = row[columnIndex] ?? ''
+          const numericParts = value.split(/\s+/).filter(Boolean)
+          const followingCells = Array.from(
+            { length: numericParts.length - 1 },
+            (_, partIndex) => row[columnIndex + partIndex + 1] ?? '',
+          )
+          if (
+            numericParts.length < 2
+            || !numericParts.some(part => /\d/.test(part))
+            || !numericParts.every(isNumericCell)
+            || columnIndex + numericParts.length > availableSourceColumnCount
+            || followingCells.some(Boolean)
+          ) {
+            continue
+          }
+          for (const [partIndex, part] of numericParts.entries()) {
+            row[columnIndex + partIndex] = part
+          }
+          columnIndex += numericParts.length - 1
         }
       }
 
@@ -643,10 +1094,23 @@ export async function extractHTML(
         && /^(?:As of|Parameters?|Period|Book|Sort On|Posted by|Fiscal Period|Report Date):?(?:\s|$)/i.test(leadingMetadataLabel)
         && followingRowsLookLikeHeaders
         && nearbyRowContainsValues
+      const leadingCaptionText = leadingCaptionCells[0]?.cell
+      const leadingCaptionFontSize = Math.max(
+        ...(fontSizesByText.get(leadingCaptionText ?? '') ?? [0]),
+      )
+      const followingHeaderFontSizes = rows.slice(1, 4)
+        .flatMap(row => row.flatMap(cell => fontSizesByText.get(cell) ?? []))
+        .sort((left, right) => left - right)
+      const medianFollowingHeaderFontSize
+        = followingHeaderFontSizes[Math.floor(followingHeaderFontSizes.length / 2)] ?? 0
+      const leadingCaptionLooksLikeTitle = (leadingCaptionText?.match(/[a-z]+/gi)?.length ?? 0) >= 2
+        || (medianFollowingHeaderFontSize > 0
+          && leadingCaptionFontSize >= medianFollowingHeaderFontSize * 1.1)
       const leadingCaption = leadingCaptionCells.length === 1
         && leadingCaptionCells[0]!.columnIndex > 0
         && followingRowsLookLikeHeaders
         && nearbyRowContainsValues
+        && leadingCaptionLooksLikeTitle
         ? leadingCaptionCells[0]!.cell
         : undefined
       if (leadingCaption) {
@@ -839,7 +1303,7 @@ export async function extractHTML(
         && precedingHeaderLabel !== undefined
         && precedingHeaderLabel.length <= 40
         && !precedingLabelIsSectionHeading
-        && !/[.!?:;]$|https?:\/\/|\S+@\S+|\d{1,2}\/\d{1,2}\/\d{2,4}/.test(precedingHeaderLabel)
+        && !/[=]|[.!?:;]$|https?:\/\/|\S+@\S+|\d{1,2}\/\d{1,2}\/\d{2,4}/.test(precedingHeaderLabel)
       if (
         precedingLabelCanCompleteHeader
         && headerColumnToComplete !== undefined
@@ -962,6 +1426,9 @@ export async function extractHTML(
       if (lineIndex < lines.length && lines[lineIndex] !== '') {
         structuredLines.push('')
       }
+      if (selectedTableBaselines.length > 0) {
+        previousTableBottomBaseline = Math.min(...selectedTableBaselines)
+      }
     }
 
     return structuredLines.join('\n').trim()
@@ -969,7 +1436,7 @@ export async function extractHTML(
 
   inheritContinuationContext(structuredPages)
   const articles = structuredPages.map((page, pageIndex) =>
-    renderPageArticle(page, pageIndex + 1))
+    renderPageArticle(page, pageIndex + 1, extractedItems.items[pageIndex] ?? []))
 
   return {
     totalPages,
@@ -1007,17 +1474,28 @@ interface ParallelTablesBlock {
 
 type PageBlock
   = | { kind: 'heading', level: number, text: string }
-    | { kind: 'ordered-list', entries: Array<{ depth: number, text: string }> }
+    | { kind: 'ordered-list', entries: OrderedListEntry[] }
     | { kind: 'unordered-list', entries: string[] }
     | { kind: 'paragraph', lines: string[] }
     | { kind: 'blockquote', lines: string[] }
+    | { kind: 'spatial', lines: string[] }
     | ParallelTablesBlock
     | TableBlock
 
-function renderPageArticle(page: string, pageNumber: number): string {
-  const blocks = mergeTableSections(enrichTableHeaders(
+interface OrderedListEntry {
+  depth: number
+  marker: 'decimal' | 'lower-alpha'
+  text: string
+}
+
+function renderPageArticle(
+  page: string,
+  pageNumber: number,
+  positionedText: StructuredTextItem[],
+): string {
+  const blocks = repairJoinedTableCells(mergeTableSections(enrichTableHeaders(
     splitParallelTables(attachTrailingCellContinuations(parsePageBlocks(page))),
-  )).filter((block) => {
+  )), positionedText).filter((block) => {
     if (block.kind !== 'table' || block.header.some(Boolean) || block.body.length !== 1) {
       return true
     }
@@ -1031,6 +1509,191 @@ function renderPageArticle(page: string, pageNumber: number): string {
   })
   const content = blocks.map(renderPageBlock).join('\n')
   return `<article class="pdf-page" data-page-number="${pageNumber}">\n${content}\n</article>`
+}
+
+function repairJoinedTableCells(
+  blocks: PageBlock[],
+  positionedText: StructuredTextItem[],
+): PageBlock[] {
+  const positionedTextByValue = new Map<string, StructuredTextItem[]>()
+  for (const item of positionedText) {
+    const matchingItems = positionedTextByValue.get(item.str) ?? []
+    matchingItems.push(item)
+    positionedTextByValue.set(item.str, matchingItems)
+  }
+  const repairTable = (table: TableBlock): TableBlock => {
+    const body = table.body.map(row => row.kind === 'row'
+      ? { kind: 'row' as const, cells: [...row.cells] }
+      : row)
+    const bodyRows = body.filter((row): row is TableRow => row.kind === 'row')
+    if (table.header.length < 2 || bodyRows.length === 0) {
+      return { ...table, body }
+    }
+
+    let precedingBaseline = Infinity
+    const baselines = new Map<TableRow, number>()
+    for (const row of bodyRows) {
+      const rowValues = row.cells.flatMap(cell => cell.split('<br>')).filter(Boolean)
+      const candidates = rowValues.flatMap(value => positionedTextByValue.get(value) ?? [])
+      const followingCandidates = candidates.filter(item =>
+        item.y < precedingBaseline - item.fontSize * 0.2)
+      const candidatesInReadingOrder = followingCandidates.length > 0
+        ? followingCandidates
+        : candidates
+      const baseline = candidatesInReadingOrder
+        .map(candidate => ({
+          y: candidate.y,
+          matches: rowValues.filter(value => (positionedTextByValue.get(value) ?? []).some(item =>
+            Math.abs(item.y - candidate.y) <= item.fontSize * 0.3)).length,
+        }))
+        .sort((left, right) => right.matches - left.matches || right.y - left.y)[0]
+        ?.y
+      if (baseline !== undefined) {
+        baselines.set(row, baseline)
+        precedingBaseline = baseline
+      }
+    }
+    const firstBodyBaseline = baselines.get(bodyRows[0]!)
+    if (firstBodyBaseline === undefined) {
+      return { ...table, body }
+    }
+
+    const headerAnchors = table.header.map((cell) => {
+      const segments = cell.split('<br>').filter(Boolean)
+      const candidates = segments.flatMap(segment => positionedTextByValue.get(segment) ?? [])
+        .filter(item =>
+          item.y > firstBodyBaseline
+          && item.y - firstBodyBaseline <= item.fontSize * 10)
+      const nearestBaseline = Math.min(
+        Infinity,
+        ...candidates.map(item => item.y - firstBodyBaseline),
+      )
+      const nearestItems = candidates.filter(item =>
+        item.y - firstBodyBaseline <= nearestBaseline + item.fontSize * 2)
+      if (nearestItems.length === 0) {
+        return undefined
+      }
+      const centers = nearestItems
+        .map(item => item.x + item.width / 2)
+        .sort((left, right) => left - right)
+      return centers[Math.floor(centers.length / 2)]
+    })
+
+    for (const row of bodyRows) {
+      const baseline = baselines.get(row)
+      if (baseline === undefined) {
+        continue
+      }
+      const itemsOnBaseline = positionedText.filter(item =>
+        Math.abs(item.y - baseline) <= item.fontSize * 0.3)
+      for (let columnIndex = 0; columnIndex < row.cells.length - 1; columnIndex++) {
+        const joinedValue = row.cells[columnIndex] ?? ''
+        if (!joinedValue || joinedValue.includes('<br>') || row.cells[columnIndex + 1]) {
+          continue
+        }
+        const leadingAnchor = headerAnchors[columnIndex]
+        const trailingAnchor = headerAnchors[columnIndex + 1]
+        if (leadingAnchor === undefined || trailingAnchor === undefined) {
+          continue
+        }
+        const components = itemsOnBaseline
+          .filter(item =>
+            item.str.trim().length >= 2
+            && joinedValue.includes(item.str))
+          .sort((left, right) => left.x - right.x)
+        if (components.length < 2 || components.map(item => item.str).join(' ') !== joinedValue) {
+          continue
+        }
+        const leadingValues: string[] = []
+        const trailingValues: string[] = []
+        for (const component of components) {
+          const center = component.x + component.width / 2
+          const target = Math.abs(center - leadingAnchor) <= Math.abs(center - trailingAnchor)
+            ? leadingValues
+            : trailingValues
+          target.push(component.str)
+        }
+        if (leadingValues.length === 0 || trailingValues.length === 0) {
+          continue
+        }
+        row.cells[columnIndex] = leadingValues.join(' ')
+        row.cells[columnIndex + 1] = trailingValues.join(' ')
+      }
+    }
+
+    const finalHeaderIndex = table.header.length - 1
+    const finalHeaderLines = table.header[finalHeaderIndex]!.split('<br>')
+    const finalHeaderLine = finalHeaderLines.at(-1)!
+    const firstRowBaseline = baselines.get(bodyRows[0]!)!
+    const finalHeaderItems = positionedText.filter(item =>
+      finalHeaderLine.includes(item.str)
+      && item.y > firstRowBaseline)
+    const separatedFinalHeaders = finalHeaderItems.flatMap(left => finalHeaderItems.flatMap((right) => {
+      const sameHeaderBand = left.y > firstRowBaseline
+        && right.y > firstRowBaseline
+        && Math.abs(left.y - right.y) <= Math.max(left.fontSize, right.fontSize) * 0.4
+      const gap = right.x - (left.x + left.width)
+      return sameHeaderBand
+        && gap >= Math.max(left.fontSize, right.fontSize) * 0.5
+        && `${left.str} ${right.str}` === finalHeaderLine
+        ? [{ left, right, gap }]
+        : []
+    })).sort((left, right) =>
+      Math.abs(left.left.y - firstRowBaseline) - Math.abs(right.left.y - firstRowBaseline)
+      || right.gap - left.gap)[0]
+    if (!separatedFinalHeaders) {
+      return { ...table, body }
+    }
+
+    const leadingHeader = [
+      ...finalHeaderLines.slice(0, -1),
+      separatedFinalHeaders.left.str,
+    ].join('<br>')
+    const header = [
+      ...table.header.slice(0, finalHeaderIndex),
+      leadingHeader,
+      separatedFinalHeaders.right.str,
+    ]
+    for (const row of bodyRows) {
+      const value = row.cells[finalHeaderIndex] ?? ''
+      const numericParts = value.split(/\s+/).filter(Boolean)
+      if (numericParts.length === 2 && numericParts.every(part => /^\(?-?\$?[\d,.]+\)?$/.test(part))) {
+        row.cells.splice(finalHeaderIndex, 1, ...numericParts)
+        continue
+      }
+      const baseline = baselines.get(row)
+      const valueItem = baseline === undefined
+        ? undefined
+        : (positionedTextByValue.get(value) ?? []).find(item =>
+            item.str === value
+            && Math.abs(item.y - baseline) <= item.fontSize * 0.3)
+      const alignsWithTrailingHeader = valueItem
+        && Math.abs(valueItem.x + valueItem.width - (separatedFinalHeaders.right.x + separatedFinalHeaders.right.width))
+        < Math.abs(valueItem.x + valueItem.width - (separatedFinalHeaders.left.x + separatedFinalHeaders.left.width))
+      row.cells.splice(
+        finalHeaderIndex,
+        1,
+        ...(alignsWithTrailingHeader ? ['', value] : [value, '']),
+      )
+    }
+    return { ...table, header, body }
+  }
+
+  return blocks.map((block) => {
+    if (block.kind === 'table') {
+      return repairTable(block)
+    }
+    if (block.kind !== 'parallel-tables') {
+      return block
+    }
+    return {
+      ...block,
+      sections: block.sections.map(section => ({
+        ...section,
+        table: repairTable(section.table),
+      })),
+    }
+  })
 }
 
 function renderHTMLDocument(content: string, title: string): string {
@@ -1057,6 +1720,7 @@ tfoot { border-top: 2px solid #475569; }
 .parallel-tables table { width: 100%; }
 .table-with-notes { align-items: start; display: grid; gap: 2rem; grid-template-columns: max-content minmax(12rem, 1fr); }
 .table-with-notes aside { margin-top: 1rem; }
+.spatial-content { margin: 1rem 0; max-width: 100%; overflow-x: auto; }
 @media print { body { margin: 0; } .pdf-page { break-after: page; } .page-break { display: none; } }
 </style>
 </head>
@@ -1085,6 +1749,20 @@ function parsePageBlocks(page: string): PageBlock[] {
       continue
     }
 
+    if (line === ':::spatial') {
+      const spatialLines: string[] = []
+      lineIndex++
+      while (lineIndex < lines.length && lines[lineIndex] !== ':::') {
+        spatialLines.push(lines[lineIndex]!)
+        lineIndex++
+      }
+      if (lines[lineIndex] === ':::') {
+        lineIndex++
+      }
+      blocks.push({ kind: 'spatial', lines: spatialLines })
+      continue
+    }
+
     const tableHeader = structuredTableCells(line)
     if (tableHeader && /^\|(?:\s*---\s*\|)+$/.test(lines[lineIndex + 1] ?? '')) {
       const body: TableRow[] = []
@@ -1101,16 +1779,17 @@ function parsePageBlocks(page: string): PageBlock[] {
       continue
     }
 
-    if (/^\s*\d+\.\s+/.test(line)) {
-      const entries: Array<{ depth: number, text: string }> = []
+    if (/^\s*(?:\d+|[a-z])\.\s+/i.test(line)) {
+      const entries: OrderedListEntry[] = []
       while (lineIndex < lines.length) {
         const entryLine = lines[lineIndex]!
-        const marker = /^(\s*)\d+\. /.exec(entryLine)
+        const marker = /^(\s*)(\d+|[a-z])\. /i.exec(entryLine)
         if (!marker) {
           break
         }
         entries.push({
           depth: Math.floor(marker[1]!.length / 3),
+          marker: /^\d+$/.test(marker[2]!) ? 'decimal' : 'lower-alpha',
           text: entryLine.slice(marker[0].length),
         })
         lineIndex++
@@ -1144,7 +1823,7 @@ function parsePageBlocks(page: string): PageBlock[] {
       const candidate = lines[lineIndex]!
       if (
         /^(?:#{1,6}|- |> )/.test(candidate)
-        || /^\s*\d+\.\s+/.test(candidate)
+        || /^\s*(?:\d+|[a-z])\.\s+/i.test(candidate)
         || (structuredTableCells(candidate)
           && /^\|(?:\s*---\s*\|)+$/.test(lines[lineIndex + 1] ?? ''))
       ) {
@@ -1234,6 +1913,33 @@ function mergeTableSections(blocks: PageBlock[]): PageBlock[] {
       }
       const label = blocks[followingIndex]!
       const continuation = blocks[followingIndex + 1]!
+      const compactSectionHeading = label.kind === 'heading'
+        && label.level >= 2
+        && label.text.length <= 20
+        && /^[a-z0-9]+(?:[-.][a-z0-9]+)*:?$/i.test(label.text)
+      const continuationRows = continuation.kind === 'table'
+        ? continuation.body.filter((row): row is TableRow => row.kind === 'row')
+        : []
+      const headerlessSectionContinuation = compactSectionHeading
+        && continuation.kind === 'table'
+        && continuation.header.every(cell => cell.length === 0)
+        && continuationRows.length > 0
+        && continuationRows.every(row => row.cells.length <= table.header.length - 1)
+      if (headerlessSectionContinuation && label.kind === 'heading') {
+        const alignedRows = continuationRows.map(row => ({
+          kind: 'row' as const,
+          cells: [
+            '',
+            ...row.cells,
+            ...Array.from<string>({
+              length: table.header.length - row.cells.length - 1,
+            }).fill(''),
+          ],
+        }))
+        table.body.push({ kind: 'section', label: label.text }, ...alignedRows)
+        followingIndex += 2
+        continue
+      }
       const sparseRowLabels = label.kind === 'paragraph'
         && label.lines.length > 1
         && label.lines.every(line =>
@@ -1442,8 +2148,12 @@ function splitParallelTables(blocks: PageBlock[]): PageBlock[] {
       continue
     }
     const boundary = statusColumns[1]!
+    const leftHeadingColumn = headingOnlyColumn(block, 0, boundary)
+    const rightHeadingColumn = headingOnlyColumn(block, boundary, block.header.length)
     let leftHeading = tableHeading(block.header.slice(0, boundary))
+      ?? (leftHeadingColumn === undefined ? undefined : block.header[leftHeadingColumn])
     let rightHeading = tableHeading(block.header.slice(boundary))
+      ?? (rightHeadingColumn === undefined ? undefined : block.header[rightHeadingColumn])
     const precedingHeadings = separated.at(-1)
     if (
       (!leftHeading || !rightHeading)
@@ -1529,8 +2239,9 @@ function splitParallelTables(blocks: PageBlock[]): PageBlock[] {
           heading: leftHeading,
           table: {
             kind: 'table',
-            header: labels.slice(0, boundary),
-            body: leftBody,
+            header: labels.slice(0, boundary)
+              .filter((_, columnIndex) => columnIndex !== leftHeadingColumn),
+            body: removeTableColumn(leftBody, leftHeadingColumn),
           },
           notes: [],
         },
@@ -1538,8 +2249,14 @@ function splitParallelTables(blocks: PageBlock[]): PageBlock[] {
           heading: rightHeading,
           table: {
             kind: 'table',
-            header: labels.slice(boundary),
-            body: rightBody,
+            header: labels.slice(boundary)
+              .filter((_, columnIndex) =>
+                rightHeadingColumn === undefined
+                || columnIndex !== rightHeadingColumn - boundary),
+            body: removeTableColumn(
+              rightBody,
+              rightHeadingColumn === undefined ? undefined : rightHeadingColumn - boundary,
+            ),
           },
           notes: rightNotes,
         },
@@ -1548,6 +2265,34 @@ function splitParallelTables(blocks: PageBlock[]): PageBlock[] {
     blockIndex += consumedBlocks
   }
   return separated
+}
+
+function headingOnlyColumn(
+  table: TableBlock,
+  start: number,
+  end: number,
+): number | undefined {
+  return Array.from({ length: end - start }, (_, index) => start + index)
+    .find((columnIndex) => {
+      const label = table.header[columnIndex] ?? ''
+      return (label.match(/[a-z]+/gi)?.length ?? 0) >= 2
+        && table.body.every(row => row.kind !== 'row' || !(row.cells[columnIndex] ?? ''))
+    })
+}
+
+function removeTableColumn(
+  rows: Array<TableRow | TableSectionRow>,
+  columnIndex: number | undefined,
+): Array<TableRow | TableSectionRow> {
+  if (columnIndex === undefined) {
+    return rows
+  }
+  return rows.map(row => row.kind === 'section'
+    ? row
+    : {
+        kind: 'row',
+        cells: row.cells.filter((_, index) => index !== columnIndex),
+      })
 }
 
 function tableHeading(header: string[]): string | undefined {
@@ -1853,6 +2598,9 @@ function renderPageBlock(block: PageBlock): string {
   if (block.kind === 'paragraph') {
     return `<p>${block.lines.map(renderInline).join('<br>')}</p>`
   }
+  if (block.kind === 'spatial') {
+    return `<figure class="spatial-content"><pre>${escapeHTML(block.lines.join('\n'))}</pre></figure>`
+  }
   if (block.kind === 'parallel-tables') {
     const sections = block.sections.map(section =>
       `<section>${section.heading ? `\n<h3>${renderInline(section.heading)}</h3>` : ''}\n${renderTable(section.table)}${section.notes.map(note => `\n<p>${renderInline(note)}</p>`).join('')}\n</section>`)
@@ -1864,20 +2612,20 @@ function renderPageBlock(block: PageBlock): string {
   return renderTable(block)
 }
 
-function renderOrderedList(entries: Array<{ depth: number, text: string }>): string {
-  const parents: Array<{ text: string, children: string[] }> = []
+function renderOrderedList(entries: OrderedListEntry[]): string {
+  const parents: Array<{ text: string, children: OrderedListEntry[] }> = []
   for (const entry of entries) {
     if (entry.depth === 0 || parents.length === 0) {
       parents.push({ text: entry.text, children: [] })
       continue
     }
-    parents.at(-1)!.children.push(entry.text)
+    parents.at(-1)!.children.push(entry)
   }
 
   const renderedEntries = parents.map((parent) => {
     const children = parent.children.length === 0
       ? ''
-      : `\n<ol>\n${parent.children.map(child => `<li>${renderInline(child)}</li>`).join('\n')}\n</ol>`
+      : `\n<ol${parent.children.every(child => child.marker === 'lower-alpha') ? ' type="a"' : ''}>\n${parent.children.map(child => `<li>${renderInline(child.text)}</li>`).join('\n')}\n</ol>`
     return `<li>${renderInline(parent.text)}${children}</li>`
   })
   return `<ol>\n${renderedEntries.join('\n')}\n</ol>`
@@ -2080,6 +2828,15 @@ function inferHeaderRowCount(
   })
   if (firstDataRow > 0) {
     const headerRows = rows.slice(0, firstDataRow)
+    const recordIdentifier = /^(?=.*\d)[a-z0-9][a-z0-9.-]*$/i
+    const firstSparseRecord = headerRows.findIndex((row, rowIndex) =>
+      rowIndex > 0
+      && row.filter(Boolean).length <= 2
+      && recordIdentifier.test(row[0] ?? '')
+      && rows.slice(firstDataRow).some(record => recordIdentifier.test(record[0] ?? '')))
+    if (firstSparseRecord > 0) {
+      return firstSparseRecord
+    }
     const headerRowsAreTabular = headerRows
       .every(row => row.some(cell => cell.length > 0) && row.every((cell, columnIndex) =>
         !isNumericCell(cell)
@@ -2139,11 +2896,24 @@ function stitchWrappedRows(
       && populated.every(cell => !/^(?:(?:Grand )?Total\b|\d{5}-\d{3}\b|PULL:)/i.test(cell))
       && populated.every(cell => !/^Page \d/i.test(cell))
   }
+  const isTrailingFinancialContinuation = (row: string[]) => {
+    const populatedColumnIndexes = row.flatMap((cell, columnIndex) =>
+      cell ? [columnIndex] : [])
+    return populatedColumnIndexes.length >= 1
+      && populatedColumnIndexes.length <= 4
+      && populatedColumnIndexes[0]! >= Math.floor(columnCount / 2)
+      && populatedColumnIndexes.every(columnIndex => isNumericCell(row[columnIndex]!))
+  }
 
   let stitchedRows: string[][]
   if (!isRecordRow(rows[0]!)) {
+    const startsIdentifiedRecord = (row: string[]) =>
+      /^(?=.*\d)[a-z0-9][a-z0-9.-]*$/i.test(row[0] ?? '')
     const recordIndexes = rows.flatMap((row, rowIndex) =>
-      isRecordRow(row) ? [rowIndex] : [])
+      (isRecordRow(row) || startsIdentifiedRecord(row))
+      && !isTrailingFinancialContinuation(row)
+        ? [rowIndex]
+        : [])
     if (recordIndexes.length === 0) {
       return rows
     }
@@ -2151,7 +2921,8 @@ function stitchWrappedRows(
     const stitched = rows.map(row => [...row])
     const mergedRows = new Set<number>()
     for (const [rowIndex, row] of rows.entries()) {
-      if (!canMerge(row)) {
+      const trailingFinancialValues = isTrailingFinancialContinuation(row)
+      if (!canMerge(row) && !trailingFinancialValues) {
         continue
       }
       const recordIndex = recordIndexes.reduce((nearest, candidate) =>
@@ -2168,11 +2939,19 @@ function stitchWrappedRows(
           continue
         }
         const recordCell = record[columnIndex]
-        record[columnIndex] = recordCell
+        record[columnIndex] = recordCell && recordCell !== '-'
           ? rowIndex < recordIndex
             ? `${continuation}<br>${recordCell}`
             : `${recordCell}<br>${continuation}`
           : continuation
+      }
+      if (trailingFinancialValues) {
+        for (let columnIndex = 1; columnIndex < columnCount; columnIndex++) {
+          const packedValue = /^-\s+([+\-]?\$?\(?\d[\d,.]*\)?)$/.exec(record[columnIndex] ?? '')
+          if (packedValue && record[columnIndex - 1]) {
+            record[columnIndex] = packedValue[1]!
+          }
+        }
       }
       mergedRows.add(rowIndex)
     }
@@ -2202,6 +2981,10 @@ function stitchWrappedRows(
         && populatedColumnIndexes.some(columnIndex => !isNumericCell(row[columnIndex]!))
         && populatedColumnIndexes.every(columnIndex =>
           !/^(?:(?:Grand )?Total\b|\d{5}-\d{3}\b|PULL:)/i.test(row[columnIndex]!))
+      const continuesTrailingFinancialValues = previousRow !== undefined
+        && !row[0]
+        && previousPopulatedCount >= 6
+        && isTrailingFinancialContinuation(row)
       const splitTokenColumn = previousRow === undefined || populatedColumnIndexes.length !== 1
         ? undefined
         : populatedColumnIndexes[0]
@@ -2215,7 +2998,10 @@ function stitchWrappedRows(
         && previousCellParts[0]!.endsWith('-')
         && previousCellParts.slice(1).every(part => /^\d+$/.test(part))
       const continuesPreviousRow = stitchedRows.length > 0
-        && (canMerge(row) || continuesDenseRecord || continuesSplitToken)
+        && (canMerge(row)
+          || continuesDenseRecord
+          || continuesTrailingFinancialValues
+          || continuesSplitToken)
         && !(row[0] && previousRow?.[0])
       if (!continuesPreviousRow) {
         stitchedRows.push([...row])
@@ -2229,8 +3015,19 @@ function stitchWrappedRows(
           continue
         }
         previousRowToExtend[columnIndex] = previousRowToExtend[columnIndex]
+          && previousRowToExtend[columnIndex] !== '-'
           ? `${previousRowToExtend[columnIndex]}<br>${continuation}`
           : continuation
+      }
+      if (continuesTrailingFinancialValues) {
+        for (let columnIndex = 1; columnIndex < columnCount; columnIndex++) {
+          const packedValue = /^-\s+([+\-]?\$?\(?\d[\d,.]*\)?)$/.exec(
+            previousRowToExtend[columnIndex] ?? '',
+          )
+          if (packedValue && previousRowToExtend[columnIndex - 1]) {
+            previousRowToExtend[columnIndex] = packedValue[1]!
+          }
+        }
       }
     }
   }
@@ -2330,6 +3127,11 @@ function inheritContinuationContext(structuredPages: string[]): void {
 
     const previousHeaders = tableHeadersByColumnCount(previousPage)
     const lines = page.split('\n')
+    const pageTitle = inferPageTitleBeforeTable(lines)
+    if (pageTitle) {
+      const titleIndex = lines.indexOf(pageTitle)
+      lines[titleIndex] = `# ${pageTitle}`
+    }
     for (let lineIndex = 0; lineIndex < lines.length - 1; lineIndex++) {
       const cells = structuredTableCells(lines[lineIndex]!)
       if (
@@ -2349,6 +3151,11 @@ function inheritContinuationContext(structuredPages: string[]): void {
 
       const compatibleHeader = [...previousHeaders.entries()]
         .filter(([columnCount, header]) => {
+          const currentSection = lines.slice(0, lineIndex)
+            .findLast(line => line.startsWith('## '))
+          if (currentSection && !previousPage.split('\n').includes(currentSection)) {
+            return false
+          }
           if (columnCount <= cells.length) {
             return false
           }
@@ -2458,6 +3265,30 @@ function inheritContinuationContext(structuredPages: string[]): void {
       ? inheritedPage
       : `# ${previousTitle} (continued)\n\n${inheritedPage}`
   }
+}
+
+function inferPageTitleBeforeTable(lines: string[]): string | undefined {
+  if (lines.some(line => line.startsWith('# '))) {
+    return undefined
+  }
+  const firstTableLine = lines.findIndex(line => structuredTableCells(line) !== undefined)
+  const leadingLines = lines.slice(0, firstTableLine < 0 ? lines.length : firstTableLine)
+  const candidates = leadingLines.filter((line) => {
+    const words = line.match(/[a-z][a-z'-]*/gi) ?? []
+    return line.length >= 4
+      && line.length <= 100
+      && words.length >= 2
+      && words.length <= 12
+      && !/^(?:As of|Parameters?|Period|Book|Sort On|Posted by|Fiscal Period|Report Date|For \d)/i.test(line)
+      && !/[.!?;]$|https?:\/\/|\S+@\S+/.test(line)
+  })
+  return candidates
+    .flatMap(shorter => candidates.some(longer =>
+      longer !== shorter
+      && longer.toLowerCase().endsWith(shorter.toLowerCase()))
+      ? [shorter]
+      : [])
+    .sort((left, right) => right.length - left.length)[0]
 }
 
 function headerWordOverlap(left: string, right: string): number {
