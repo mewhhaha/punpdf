@@ -230,7 +230,10 @@ function readingBlocks(items: PositionedItem[]): PositionedItem[][] {
   }
 
   const blockGap = medianFontSize(items) * 1.5
-  const stripes = splitAtHorizontalGaps(items, blockGap)
+  const containsDenseTable = inferDenseTableLayout(groupIntoLines(items)) !== undefined
+  const stripes = containsDenseTable
+    ? [items]
+    : splitAtHorizontalGaps(items, blockGap)
   if (stripes.length > 1) {
     return stripes.flatMap(stripe => readingBlocks(stripe))
   }
@@ -348,6 +351,7 @@ function distinctBaselines(items: PositionedItem[]): number[] {
 }
 
 function renderBlock(blockItems: PositionedItem[]): string {
+  const lines = groupIntoLines(blockItems)
   // Embedded font metrics can overstate run widths, so repeated x positions
   // are stronger evidence of a table boundary than the measured text gap.
   const columnBaselines = new Map<number, Set<number>>()
@@ -360,9 +364,469 @@ function renderBlock(blockItems: PositionedItem[]): string {
     }
   }
 
-  return groupIntoLines(blockItems)
-    .map(line => renderLine(line, columnBaselines))
-    .join('\n')
+  const tableLayout = inferDenseTableLayout(lines)
+  if (!tableLayout) {
+    return lines.map(line => renderLine(line, columnBaselines)).join('\n')
+  }
+
+  const renderedLines: string[] = []
+  let lineIndex = 0
+  while (lineIndex < lines.length) {
+    const tableRange = tableLayout.ranges.find(range => range.start === lineIndex)
+    if (!tableRange) {
+      renderedLines.push(renderLine(lines[lineIndex]!, columnBaselines))
+      lineIndex++
+      continue
+    }
+
+    const rangeLines = lines.slice(tableRange.start, tableRange.end + 1)
+    const inferredRangeLayout = tableLayout.ranges.length > 1
+      ? inferDenseTableLayout(rangeLines)
+      : undefined
+    const rangeIsSparseSubset = inferredRangeLayout
+      && inferredRangeLayout.columnStarts.length < tableLayout.columnStarts.length
+      && inferredRangeLayout.columnStarts.every(start =>
+        tableLayout.columnStarts.some(tableStart =>
+          Math.abs(start - tableStart)
+          <= Math.max(inferredRangeLayout.positionTolerance, tableLayout.positionTolerance)))
+    const rangeLayout = rangeIsSparseSubset
+      ? tableLayout
+      : inferredRangeLayout ?? tableLayout
+    if (renderedLines.at(-1)?.includes('\t')) {
+      renderedLines.push('')
+    }
+    const textBeforeTable = rangeLines
+      .map(line => line.items.filter(item =>
+        item.x < rangeLayout.tableStart - rangeLayout.positionTolerance))
+      .filter(items => items.length > 0)
+      .map(items => renderLine(
+        {
+          baseline: items[0]!.y,
+          fontSize: Math.max(...items.map(item => item.fontSize)),
+          top: Math.min(...items.map(item => item.y - item.fontSize)),
+          items,
+        },
+        new Map(),
+      ).replaceAll('\t', ' '))
+      .filter(text => text.length > 0)
+    renderedLines.push(...textBeforeTable)
+
+    for (const line of rangeLines) {
+      const tableItems = line.items.filter(item =>
+        item.x >= rangeLayout.tableStart - rangeLayout.positionTolerance)
+      if (tableItems.length === 0) {
+        continue
+      }
+      renderedLines.push(renderTableLine(line, tableItems, rangeLayout))
+    }
+    lineIndex = tableRange.end + 1
+  }
+
+  return renderedLines.join('\n')
+}
+
+interface DenseTableLayout {
+  columnStarts: number[]
+  positionTolerance: number
+  ranges: Array<{ start: number, end: number }>
+  tableStart: number
+}
+
+function inferDenseTableLayout(lines: Line[]): DenseTableLayout | undefined {
+  const candidateLines = lines.filter(line =>
+    line.items.filter(item => item.item.str.trim().length > 0).length >= 4)
+  if (candidateLines.length === 0) {
+    return undefined
+  }
+
+  const candidateRuns = candidateLines.flatMap(line => line.items)
+    .filter(item => item.item.str.trim().length > 0)
+  // Aligned prose can resemble table rows. Numeric density is the extra
+  // evidence required before using the narrow-grid heuristics.
+  const numericShare = candidateRuns.filter(item => /\d/.test(item.item.str)).length
+    / candidateRuns.length
+  const numericTableTokenCount = candidateRuns.filter(item =>
+    isNumericTableToken(item.item.str)).length
+  const numericTableShare = numericTableTokenCount / candidateRuns.length
+  if (
+    numericShare < 0.15
+    || numericTableShare < 0.3
+    || (candidateLines.length === 1
+      && (candidateRuns.length < 6
+        || numericShare < 0.5
+        || numericTableTokenCount < candidateRuns.length - 1))
+  ) {
+    return undefined
+  }
+
+  const fontCounts = new Map<number, number>()
+  for (const line of candidateLines) {
+    for (const positionedItem of line.items) {
+      if (positionedItem.item.str.trim().length === 0) {
+        continue
+      }
+      const fontBucket = Math.round(positionedItem.fontSize * 10)
+      fontCounts.set(fontBucket, (fontCounts.get(fontBucket) ?? 0) + 1)
+    }
+  }
+  const dominantFontBucket = [...fontCounts.entries()]
+    .sort((left, right) => right[1] - left[1])[0]?.[0]
+  if (dominantFontBucket === undefined) {
+    return undefined
+  }
+
+  const dominantFontSize = dominantFontBucket / 10
+  const fontTolerance = Math.max(0.05, dominantFontSize * 0.04)
+  const positionTolerance = Math.max(0.5, dominantFontSize * 0.6)
+  const candidateRows = lines.map(line => line.items.filter(item =>
+    item.item.str.trim().length > 0
+    && Math.abs(item.fontSize - dominantFontSize) <= fontTolerance))
+    .filter(items => items.length >= 4)
+  if (candidateRows.length === 0) {
+    return undefined
+  }
+  const numericRows = candidateRows.filter(row =>
+    numericRunCount(row) >= Math.max(2, Math.ceil(row.length / 4)))
+  const representativeRows = numericRows.length > 0 ? numericRows : candidateRows
+  const rowLengthCounts = new Map<number, number>()
+  for (const row of representativeRows) {
+    rowLengthCounts.set(row.length, (rowLengthCounts.get(row.length) ?? 0) + 1)
+  }
+  const repeatedLengths = [...rowLengthCounts.entries()]
+    .filter(([, occurrenceCount]) => occurrenceCount >= 2)
+    .sort((left, right) => right[0] - left[0])
+  const widestNumericRow = [...representativeRows]
+    .sort((left, right) => right.length - left.length)[0]!
+  const repeatedLength = repeatedLengths[0]?.[0]
+  const isolatedWideRecord = widestNumericRow.length >= 4
+    && numericRunCount(widestNumericRow) >= Math.ceil(widestNumericRow.length / 3)
+    && (repeatedLength === undefined
+      || widestNumericRow.length >= Math.ceil(repeatedLength * 1.5))
+  const mostFrequentLength = [...rowLengthCounts.entries()]
+    .sort((left, right) => right[1] - left[1] || right[0] - left[0])[0]![0]
+  const representativeLength = isolatedWideRecord
+    ? widestNumericRow.length
+    : repeatedLength ?? mostFrequentLength
+  const representativeRow = representativeRows
+    .filter(items => items.length === representativeLength)
+    .sort((left, right) =>
+      numericRunCount(right) - numericRunCount(left))[0]!
+  let columnStarts = representativeRow
+    .map(tablePosition)
+    .sort((left, right) => left - right)
+  if (columnStarts.length < 4) {
+    return undefined
+  }
+
+  const inferredInteriorColumns: number[] = []
+  const hasRepeatedIsoDateColumns = candidateRuns
+    .filter(item => /^\d{4}-\d{2}-\d{2}$/.test(item.item.str.trim()))
+    .length >= 2
+  if (hasRepeatedIsoDateColumns) {
+    for (let gapIndex = 0; gapIndex < columnStarts.length - 1; gapIndex++) {
+      const gapStart = columnStarts[gapIndex]!
+      const gapEnd = columnStarts[gapIndex + 1]!
+      const gapCandidates = lines.flatMap(line => line.items)
+        .filter(item =>
+          item.item.str.trim().length >= 20
+          && Math.abs(item.fontSize - dominantFontSize) <= fontTolerance
+          && item.x > gapStart + positionTolerance * 2
+          && item.x < gapEnd - positionTolerance * 2)
+        .sort((left, right) => left.x - right.x)
+      const clusters: PositionedItem[][] = []
+      for (const candidate of gapCandidates) {
+        const cluster = clusters.at(-1)
+        if (
+          !cluster
+          || candidate.x - cluster.at(-1)!.x > positionTolerance * 2
+        ) {
+          clusters.push([candidate])
+        }
+        else {
+          cluster.push(candidate)
+        }
+      }
+      const wrappedTextColumn = clusters
+        .filter(cluster => cluster.length >= 3)
+        .sort((left, right) => {
+          const characterCount = (cluster: PositionedItem[]) =>
+            cluster.reduce((total, item) => total + item.item.str.length, 0)
+          return characterCount(right) - characterCount(left)
+        })
+        .at(0)
+      if (wrappedTextColumn) {
+        inferredInteriorColumns.push(wrappedTextColumn[0]!.x)
+      }
+    }
+  }
+  columnStarts = [...columnStarts, ...inferredInteriorColumns]
+    .sort((left, right) => left - right)
+
+  const representativeStart = Math.min(...representativeRow.map(item => item.x))
+  let tableStart = representativeStart
+  const representativeRowCount = candidateRows.filter(row =>
+    row.length === representativeLength).length
+  const requiredLeadingOccurrences = Math.min(4, representativeRowCount)
+  const leadingCandidates = lines.flatMap(line => line.items)
+    .filter(item => item.x < representativeStart - positionTolerance)
+  const repeatedLeadingColumn = leadingCandidates
+    .map(candidate => ({
+      candidate,
+      occurrences: lines.flatMap(line => line.items).filter(item =>
+        Math.abs(item.x - candidate.x) <= positionTolerance).length,
+    }))
+    .filter(({ candidate, occurrences }) =>
+      occurrences >= 4
+      || (occurrences >= requiredLeadingOccurrences
+        && candidate.x + candidate.width >= representativeStart - positionTolerance))
+    .sort((left, right) => right.candidate.x - left.candidate.x)
+    .at(0)
+    ?.candidate
+  if (repeatedLeadingColumn) {
+    const alignsWithCenteredFirstColumn = repeatedLeadingColumn.x + repeatedLeadingColumn.width
+      >= representativeStart - positionTolerance
+    columnStarts = alignsWithCenteredFirstColumn
+      ? [repeatedLeadingColumn.x, ...columnStarts.slice(1)]
+      : [repeatedLeadingColumn.x, ...columnStarts]
+    tableStart = repeatedLeadingColumn.x
+  }
+
+  const wideHeaderRow = candidateRows
+    .filter(row =>
+      row.length > columnStarts.length
+      && numericRunCount(row) < Math.ceil(row.length / 2))
+    .map(row => ({
+      row,
+      positions: row
+        .map(item => item.x + item.width / 2)
+        .sort((left, right) => left - right),
+    }))
+    .filter(({ positions }) => {
+      const alignedColumns = positions.filter(position =>
+        columnStarts.some(start => Math.abs(start - position) <= positionTolerance * 2))
+      return alignedColumns.length >= Math.min(3, columnStarts.length)
+    })
+    .sort((left, right) => right.row.length - left.row.length)[0]
+  const missingLeadingColumns = wideHeaderRow?.positions
+    .filter(position => position < columnStarts[0]! - positionTolerance)
+    .filter((position, positionIndex, positions) =>
+      positionIndex === 0 || position - positions[positionIndex - 1]! > positionTolerance)
+  const headerDefinesWiderGrid = wideHeaderRow
+    && wideHeaderRow.positions.length >= columnStarts.length + 2
+  if (headerDefinesWiderGrid || (missingLeadingColumns && missingLeadingColumns.length > 0)) {
+    if (headerDefinesWiderGrid) {
+      const alignmentOffset = Array.from(
+        { length: wideHeaderRow.positions.length - columnStarts.length + 1 },
+        (_, offset) => ({
+          offset,
+          distance: columnStarts.reduce((total, start, columnIndex) =>
+            total + Math.abs(start - wideHeaderRow.positions[offset + columnIndex]!), 0),
+        }),
+      ).sort((left, right) => left.distance - right.distance)[0]!.offset
+      columnStarts = [
+        ...wideHeaderRow.positions.slice(0, alignmentOffset),
+        ...columnStarts,
+        ...wideHeaderRow.positions.slice(alignmentOffset + columnStarts.length),
+      ]
+    }
+    else {
+      columnStarts = [...missingLeadingColumns!, ...columnStarts]
+    }
+    const firstColumnGap = columnStarts[1]! - columnStarts[0]!
+    const firstColumnBoundary = columnStarts[0]! - firstColumnGap / 2
+    tableStart = Math.min(tableStart, firstColumnBoundary)
+  }
+
+  const minimumColumnGap = Math.min(...columnStarts.slice(1)
+    .map((start, index) => start - columnStarts[index]!))
+  const matchTolerance = Math.max(positionTolerance, minimumColumnGap * 0.45)
+
+  const matchedColumns = lines.map((line) => {
+    const matches = new Set<number>()
+    for (const positionedItem of line.items) {
+      const position = tablePosition(positionedItem)
+      const columnIndex = nearestColumnIndex(position, columnStarts)
+      if (Math.abs(position - columnStarts[columnIndex]!) <= matchTolerance) {
+        matches.add(columnIndex)
+      }
+    }
+    return matches.size
+  })
+
+  const tableBreaks = new Set<number>()
+  for (let lineIndex = 1; lineIndex < lines.length - 1; lineIndex++) {
+    const previousLine = lines[lineIndex - 1]!
+    const line = lines[lineIndex]!
+    const labelItems = line.items.filter(item => item.item.str.trim().length > 0)
+    const precedingNumericCells = previousLine.items.filter(item =>
+      isNumericTableToken(item.item.str)).length
+    const followedByNumericGrid = lines.slice(lineIndex + 1, lineIndex + 4)
+      .some(candidate =>
+        candidate.items.length >= 4
+        && candidate.items.filter(item => isNumericTableToken(item.item.str)).length >= 2)
+    if (
+      line.baseline - previousLine.baseline
+      > Math.max(line.fontSize, previousLine.fontSize) * 2.2
+      && precedingNumericCells >= 2
+      && labelItems.length >= 4
+      && labelItems.every(item => !isNumericTableToken(item.item.str))
+      && labelItems.filter(item => /[a-z]/i.test(item.item.str)).length >= 2
+      && followedByNumericGrid
+    ) {
+      tableBreaks.add(lineIndex)
+    }
+  }
+
+  const ranges: Array<{ start: number, end: number }> = []
+  let rangeStart: number | undefined
+  let lastTableLine: number | undefined
+  let misses = 0
+  for (const [index, matchCount] of matchedColumns.entries()) {
+    if (matchCount >= 4) {
+      if (rangeStart === undefined) {
+        rangeStart = index
+        while (rangeStart > 0 && matchedColumns[rangeStart - 1]! > 0) {
+          const precedingLine = lines[rangeStart - 1]!
+          const firstRangeLine = lines[rangeStart]!
+          const precedingItems = precedingLine.items.filter(item =>
+            item.item.str.trim().length > 0)
+          const precedingHeaderRow = matchedColumns[rangeStart - 1]! >= 1
+            && precedingItems.length >= 2
+            && precedingItems.every(item => !isNumericTableToken(item.item.str))
+          const precedingGapLimit = Math.max(firstRangeLine.fontSize, precedingLine.fontSize)
+            * (precedingHeaderRow ? 3.5 : 2.2)
+          if (
+            (!precedingHeaderRow
+              && Math.abs(precedingLine.fontSize - dominantFontSize) > fontTolerance)
+            || firstRangeLine.baseline - precedingLine.baseline
+            > precedingGapLimit
+          ) {
+            break
+          }
+          rangeStart--
+        }
+      }
+      lastTableLine = index
+      misses = 0
+      continue
+    }
+    if (rangeStart === undefined) {
+      continue
+    }
+    const previousLine = lines[index - 1]
+    const line = lines[index]!
+    const followsTableLine = previousLine
+      && lastTableLine === index - 1
+      && line.baseline - previousLine.baseline
+      <= Math.max(line.fontSize, previousLine.fontSize) * 2.2
+    const nextTableLine = lines.slice(index + 1).findIndex((candidateLine, offset) => {
+      const baselineGap = candidateLine.baseline - line.baseline
+      const gapLimit = Math.max(line.fontSize, candidateLine.fontSize) * 8
+      return baselineGap <= gapLimit && matchedColumns[index + offset + 1]! > 0
+    })
+    const bridgesTableRows = previousLine
+      && nextTableLine >= 0
+      && line.baseline - previousLine.baseline
+      <= Math.max(line.fontSize, previousLine.fontSize) * 8
+    const continuationItems = line.items.filter(item => item.item.str.trim().length > 0)
+    const wrappedTableCell = matchCount === 0
+      && followsTableLine
+      && nextTableLine >= 0
+      && continuationItems.length <= 2
+    if ((matchCount > 0 && (followsTableLine || bridgesTableRows)) || wrappedTableCell) {
+      lastTableLine = index
+      misses = 0
+      continue
+    }
+    misses++
+    if (misses <= 1) {
+      continue
+    }
+    ranges.push({ start: rangeStart, end: lastTableLine! })
+    rangeStart = undefined
+    lastTableLine = undefined
+    misses = 0
+  }
+  if (rangeStart !== undefined && lastTableLine !== undefined) {
+    ranges.push({ start: rangeStart, end: lastTableLine })
+  }
+  if (tableBreaks.size > 0) {
+    const boundaries = [0, ...tableBreaks, lines.length]
+    const separatedRanges = boundaries.slice(0, -1).flatMap((start, boundaryIndex) => {
+      const end = boundaries[boundaryIndex + 1]!
+      const segmentLayout = inferDenseTableLayout(lines.slice(start, end))
+      return segmentLayout?.ranges.map((range, rangeIndex) => ({
+        start: boundaryIndex > 0 && rangeIndex === 0 ? start : start + range.start,
+        end: start + range.end,
+      })) ?? []
+    })
+    if (separatedRanges.length >= 2) {
+      ranges.splice(0, ranges.length, ...separatedRanges)
+    }
+  }
+  if (ranges.length === 0) {
+    return undefined
+  }
+
+  return { columnStarts, positionTolerance, ranges, tableStart }
+}
+
+function numericRunCount(items: PositionedItem[]): number {
+  return items.filter(item => /\d/.test(item.item.str)).length
+}
+
+function tablePosition(positionedItem: PositionedItem): number {
+  if (
+    isNumericTableToken(positionedItem.item.str)
+    || positionedItem.width <= positionedItem.fontSize * 4
+  ) {
+    return positionedItem.x + positionedItem.width / 2
+  }
+  return positionedItem.x
+}
+
+function isNumericTableToken(text: string): boolean {
+  return /^(?:(?:[+\-]?\$?\(?\d[\d,]*(?:\.\d+)?%?\)?|\d+\/\d+|\d{1,4}[-/]\d{1,2}[-/]\d{1,4})\s*\*?|[-–—])$/.test(text.trim())
+}
+
+function nearestColumnIndex(position: number, columnStarts: number[]): number {
+  let columnIndex = 0
+  let columnDistance = Infinity
+  for (const [index, start] of columnStarts.entries()) {
+    const distance = Math.abs(start - position)
+    if (distance < columnDistance) {
+      columnIndex = index
+      columnDistance = distance
+    }
+  }
+  return columnIndex
+}
+
+function renderTableLine(
+  line: Line,
+  positionedItems: PositionedItem[],
+  layout: DenseTableLayout,
+): string {
+  const columnItems = layout.columnStarts.map(() => [] as PositionedItem[])
+  const visibleItems = positionedItems.filter(item => item.item.str.trim().length > 0)
+  const centersHeaderLabels = visibleItems.length >= 2
+    && visibleItems.every(item => !isNumericTableToken(item.item.str))
+    && visibleItems.filter(item => /[a-z]/i.test(item.item.str)).length >= 2
+  for (const positionedItem of positionedItems) {
+    const columnIndex = nearestColumnIndex(
+      centersHeaderLabels
+        ? positionedItem.x + positionedItem.width / 2
+        : tablePosition(positionedItem),
+      layout.columnStarts,
+    )
+    columnItems[columnIndex]!.push(positionedItem)
+  }
+
+  return columnItems.map(items => items.length === 0
+    ? ''
+    : renderLine({ ...line, items }, new Map()).replaceAll('\t', ' '))
+    .join('\t')
+    .trimEnd()
 }
 
 function groupIntoLines(positionedItems: PositionedItem[]): Line[] {

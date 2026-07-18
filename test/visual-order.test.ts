@@ -308,6 +308,34 @@ describe('textInVisualOrder', () => {
     expect(text).toBe('Row1\tA\nRow2\tB\nRow3\tC\nRow4\tD')
   })
 
+  it('keeps sparse leading columns attached to a dense numeric table', () => {
+    const rows = [
+      ['Group', 'Name', 'Description', 'Control', 'Current', '0-30', 'Future'],
+      ['vendor-a', 'Vendor A', '', '', '', '', '0.00'],
+      ['', '', 'First invoice', 'P-100', '932.03', '932.03', '0.00'],
+      ['vendor-b', 'Vendor B', '', '', '', '', '0.00'],
+      ['', '', 'Second invoice', 'P-200', '486.43', '486.43', '0.00'],
+      ['vendor-c', 'Vendor C', '', '', '', '', '0.00'],
+      ['', '', 'Third invoice', 'P-300', '355.02', '355.02', '0.00'],
+    ]
+    const starts = [10, 65, 125, 205, 260, 315, 370]
+    const items = rows.flatMap((row, rowIndex) => row.flatMap((cell, columnIndex) =>
+      cell
+        ? [run(cell, {
+            x: starts[columnIndex]!,
+            y: 90 - rowIndex * 10,
+            width: Math.max(15, cell.length * 3),
+            fontSize: 5,
+          })]
+        : []))
+    const text = textInVisualOrder(items, pageViewport)
+    const renderedRows = text.split('\n').filter(line => line.includes('\t'))
+
+    expect(text).toContain('Group\tName\tDescription\tControl\tCurrent\t0-30\tFuture')
+    expect(renderedRows).toContain('vendor-a\tVendor A\t\t\t\t\t0.00')
+    expect(renderedRows).toContain('\t\tFirst invoice\tP-100\t932.03\t932.03\t0.00')
+  })
+
   it('reads a contiguous right-to-left sequence from its rightmost run', () => {
     const text = textInVisualOrder([
       run('ALEPH', { x: 50, y: 80, width: 30, dir: 'rtl' }),

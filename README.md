@@ -12,6 +12,7 @@ Ships with a serverless build of Mozilla's [PDF.js](https://github.com/mozilla/p
 - 🏗️ Works in Node.js, Deno, Bun, browsers, and serverless environments
 - 🪭 Includes a serverless build of PDF.js ([`@mewhhaha/punpdf/pdfjs`](./package.json))
 - 💬 Extract [text](#extract-text-from-pdf), [links](#extractlinks), and [images](#extractimages) from PDF files
+- 📄 Convert visually detected document structure to semantic [HTML](#extracthtml)
 - 🧠 Designed for AI applications and PDF summarization
 - 🧱 Supports custom PDF.js modules, including the official and legacy builds
 
@@ -250,6 +251,44 @@ function extractTextItems(
 ): Promise<{
   totalPages: number
   items: StructuredTextItem[][]
+}>
+```
+
+### `extractHTML`
+
+Extracts each page in visual reading order as a complete HTML document. Report headings, paragraphs, nested outlines, lists, metadata, and tables use semantic elements. Dense tables use complete visual rows to keep narrowly spaced values in separate cells, adjacent sidebar text stays outside the detected grid, and wrapped cells use `<br>` without becoming extra columns. Stacked and grouped headers use `<thead>`, `scope`, `rowspan`, and `colspan`; full-width table sections and subtotal rows retain their structure and emphasis. Continuation pages inherit the preceding report title and compatible table headers.
+
+PDFs generally store positioned text rather than document semantics, so structure is inferred from reusable layout evidence such as alignment, spacing, repetition, and visual prominence. The result is intended for browser viewing and HTML-aware language models.
+
+When `mergePages` is `true`, all page `<article>` elements are returned in one HTML document with horizontal-rule page boundaries. Otherwise, `html` contains one complete HTML document per PDF page.
+
+```ts
+import { extractHTML } from '@mewhhaha/punpdf'
+
+const { html } = await extractHTML(buffer, { mergePages: true })
+console.log(html)
+```
+
+**Type Declaration**
+
+```ts
+function extractHTML(
+  data: DocumentInitParameters['data'] | PDFDocumentProxy,
+  options?: {
+    mergePages?: false
+  },
+): Promise<{
+  totalPages: number
+  html: string[]
+}>
+function extractHTML(
+  data: DocumentInitParameters['data'] | PDFDocumentProxy,
+  options: {
+    mergePages: true
+  },
+): Promise<{
+  totalPages: number
+  html: string
 }>
 ```
 

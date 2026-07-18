@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
   definePDFJSModule,
+  extractHTML,
   extractImages,
   extractLinks,
   extractText,
@@ -232,6 +233,33 @@ describe('punpdf', () => {
 
     expect(text).toContain('Links in PDF\n')
     expect(text).toContain('\n\nAbout Antenna House')
+  })
+
+  it('extracts visually detected tables as HTML', async () => {
+    const { html, totalPages } = await extractHTML(await getPDF('table.pdf'))
+
+    expect(totalPages).toBe(1)
+    expect(html[0]).toContain('<h1>Invoice</h1>')
+    expect(html[0]).toContain('<thead>')
+    expect(html[0]).toContain('<th scope="col">Item</th>')
+    expect(html[0]).toContain('<tr><th scope="row">Demolition</th><td>2</td><td>450.00</td></tr>')
+  })
+
+  it('keeps data-only table rows in the HTML body', async () => {
+    const { html } = await extractHTML(await getPDF('sideways-table.pdf'))
+
+    expect(html[0]).not.toContain('<thead>')
+    expect(html[0]).toContain('<tr><th scope="row">$1,947</th><td>$1,930</td><td>$1,842</td></tr>')
+  })
+
+  it('marks page boundaries when merging HTML', async () => {
+    const { html } = await extractHTML(await getPDF('links.pdf'), {
+      mergePages: true,
+    })
+
+    expect(html).toContain('<hr class="page-break">')
+    expect(html).toContain('<article class="pdf-page" data-page-number="2">')
+    expect(html).toContain('<h1>About Antenna House</h1>')
   })
 
   it('extracts structured text items from a PDF', async () => {

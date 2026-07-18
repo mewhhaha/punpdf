@@ -1,3 +1,4 @@
+import { extractHTML as _extractHTML } from './html'
 import { extractImages as _extractImages, renderPageAsImage as _renderPageAsImage } from './image'
 import { extractLinks as _extractLinks } from './links'
 import { getMeta as _getMeta } from './meta'
@@ -5,6 +6,7 @@ import { extractText as _extractText, extractTextItems as _extractTextItems, ext
 import { resolvePDFJSImport } from './utils'
 
 export { configure, definePDFJSModule } from './config'
+export type { ExtractHTMLOptions } from './html'
 export { createIsomorphicCanvasFactory } from './image'
 export type { ExtractedTextPage, ExtractTextOptions, ExtractTextPagesOptions, StructuredTextItem } from './text'
 
@@ -22,6 +24,11 @@ export const getMeta: typeof _getMeta = async (...args) => {
 export const extractText: typeof _extractText = async (...args) => {
   await resolvePDFJSImport()
   return await (_extractText as any)(...args)
+}
+
+export const extractHTML: typeof _extractHTML = async (...args) => {
+  await resolvePDFJSImport()
+  return await (_extractHTML as any)(...args)
 }
 
 export const extractTextItems: typeof _extractTextItems = async (...args) => {

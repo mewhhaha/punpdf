@@ -1,4 +1,5 @@
 .wrangler
+tmp
 .claude
 .agents
 dist
