@@ -298,6 +298,28 @@ const headerlessFinancialSection = [
   { text: '1,565', x: 493.1, y: 680, size: 8 },
   { text: '7,086', x: 561.3, y: 680, size: 8 },
 ]
+const denseParallelFinancialTable = [
+  { text: 'Subsidiaries', x: 40, y: 810, size: 14 },
+  { text: 'Subsidiaries', x: 40, y: 780, size: 7 },
+  { text: 'Ownership', x: 205, y: 780, size: 7 },
+  { text: 'Note', x: 270, y: 780, size: 7 },
+  { text: 'Subsidiaries', x: 315, y: 780, size: 7 },
+  { text: 'Ownership', x: 480, y: 780, size: 7 },
+  { text: 'Note', x: 550, y: 780, size: 7 },
+  ...Array.from({ length: 40 }, (_, rowIndex) => {
+    const recordNumber = String(rowIndex + 1).padStart(2, '0')
+    const leftBaseline = 755 - rowIndex * 10.2
+    const rightBaseline = leftBaseline - 5.1
+    return [
+      { text: `Left subsidiary ${recordNumber}`, x: 40, y: leftBaseline, size: 7 },
+      { text: '100.00', x: 205, y: leftBaseline, size: 7 },
+      { text: '12', x: 270, y: leftBaseline, size: 7 },
+      { text: `Right subsidiary ${recordNumber}`, x: 315, y: rightBaseline, size: 7 },
+      { text: '100.00', x: 480, y: rightBaseline, size: 7 },
+      { text: '24', x: 550, y: rightBaseline, size: 7 },
+    ]
+  }).flat(),
+]
 const wrappedFinancialRowLabel = [
   { text: 'Indemnity balance', x: 40, y: 810, size: 14 },
   { text: 'Opening balance', x: 40, y: 780, size: 8 },
@@ -335,6 +357,11 @@ writeFileSync(
   pdfFromRuns(headerlessFinancialSection),
 )
 console.log('wrote test/fixtures/headerless-financial-section.pdf')
+writeFileSync(
+  join(fixturesDir, 'dense-parallel-financial-table.pdf'),
+  pdfFromRuns(denseParallelFinancialTable),
+)
+console.log('wrote test/fixtures/dense-parallel-financial-table.pdf')
 writeFileSync(
   join(fixturesDir, 'wrapped-financial-row.pdf'),
   pdfFromRuns(wrappedFinancialRowLabel),

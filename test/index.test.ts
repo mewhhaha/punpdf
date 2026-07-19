@@ -335,6 +335,15 @@ describe('punpdf', () => {
     expect(html[0]).toContain('8,452')
   })
 
+  it('uses spatial markup for a dense parallel financial table', async () => {
+    const { html } = await extractHTML(await getPDF('dense-parallel-financial-table.pdf'))
+
+    expect(html[0]).toContain('<figure class="spatial-content"><pre>')
+    expect(html[0]).toMatch(/Left subsidiary 01\s+100\.00\s+12/)
+    expect(html[0]).toMatch(/Right subsidiary 40\s+100\.00\s+24/)
+    expect(html[0]).not.toContain('<table>')
+  })
+
   it('joins a wrapped financial row label without dropping its trailing value', async () => {
     const { html } = await extractHTML(await getPDF('wrapped-financial-row.pdf'))
 

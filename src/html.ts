@@ -301,11 +301,25 @@ export async function extractHTML(
     const rawTabularCells = rawTabularRows.flatMap(row => row.filter(Boolean))
     const narrativeTableCellCount = rawTabularCells.filter(cell =>
       (cell.match(/[a-z][a-z'-]*/gi) ?? []).length >= 4).length
+    const directoryLabelCellCount = rawTabularCells.filter(cell =>
+      (cell.match(/[a-z][a-z'-]*/gi) ?? []).length >= 2).length
     const numericTableCellCount = rawTabularCells.filter(cell =>
       /^(?:[$–—-]|\(?\d[\d,.]*%?\)?)$/.test(cell)).length
     const parallelNarrativeRowCount = rawTabularRows.filter(row =>
       row.filter(cell => (cell.match(/[a-z][a-z'-]*/gi) ?? []).length >= 4).length >= 2)
       .length
+    const hasRepeatedParallelHeader = rawTabularRows.some((row) => {
+      const labels = row
+        .filter(cell => cell.length >= 4 && /[a-z]/i.test(cell))
+        .map(cell => cell.toLowerCase())
+      return labels.some((label, labelIndex) => labels.indexOf(label) !== labelIndex)
+    })
+    const hasDenseParallelFinancialTable = rawTabularRows.length >= 70
+      && maximumRawColumnCount >= 5
+      && maximumRawColumnCount <= 6
+      && numericTableCellCount >= 70
+      && directoryLabelCellCount >= 70
+      && hasRepeatedParallelHeader
     const hasFragmentedParallelNarrative = rawTableRunCount >= 3
       && parallelNarrativeRowCount >= Math.max(6, Math.ceil(rawTabularRows.length * 0.2))
       && narrativeTableCellCount >= 15
@@ -359,6 +373,7 @@ export async function extractHTML(
       || hasDetachedExhibitIdentifiers
       || hasFragmentedSignatures
       || hasDetachedNarrativeSidebar
+      || hasDenseParallelFinancialTable
       || hasFragmentedParallelNarrative
       || hasSparseCompoundGrid
       || hasFragmentedDirectory
