@@ -1,10 +1,15 @@
 import type { DocumentInitParameters, PDFDocumentProxy } from 'pdfjs-dist/types/src/display/api'
 import type { StructuredTextItem } from './text'
+import { createIsomorphicCanvasFactory, renderPageAsImage } from './image'
 import { extractText, extractTextItems } from './text'
 import { getDocumentProxy, isPDFDocumentProxy } from './utils'
 
 export interface ExtractHTMLOptions {
   mergePages?: boolean
+  preserveLayout?: {
+    canvasImport?: () => Promise<typeof import('@napi-rs/canvas')>
+    scale?: number
+  }
 }
 
 export function extractHTML(
@@ -25,17 +30,39 @@ export async function extractHTML(
   data: DocumentInitParameters['data'] | PDFDocumentProxy,
   options: ExtractHTMLOptions = {},
 ) {
-  const { mergePages = false } = options
+  const { mergePages = false, preserveLayout } = options
   const ownsDocument = !isPDFDocumentProxy(data)
-  const document = ownsDocument ? await getDocumentProxy(data) : data
+  const CanvasFactory = preserveLayout
+    ? await createIsomorphicCanvasFactory(preserveLayout.canvasImport)
+    : undefined
+  const document = ownsDocument
+    ? await getDocumentProxy(data, CanvasFactory ? { CanvasFactory } : {})
+    : data
+  const layoutDocument = preserveLayout && !ownsDocument
+    ? await getDocumentProxy(await document.getData(), { CanvasFactory })
+    : document
   let extractedText: { totalPages: number, text: string[] }
   let extractedItems: Awaited<ReturnType<typeof extractTextItems>>
+  let pageImages: string[] | undefined
 
   try {
     extractedText = await extractText(document, { readingOrder: 'visual' })
     extractedItems = await extractTextItems(document)
+    if (preserveLayout) {
+      pageImages = []
+      for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber++) {
+        pageImages.push(await renderPageAsImage(layoutDocument, pageNumber, {
+          canvasImport: preserveLayout.canvasImport,
+          scale: preserveLayout.scale,
+          toDataURL: true,
+        }))
+      }
+    }
   }
   finally {
+    if (layoutDocument !== document) {
+      await layoutDocument.cleanup()
+    }
     if (ownsDocument) {
       await document.cleanup()
     }
@@ -95,6 +122,17 @@ export async function extractHTML(
       .flat()
       .sort((left, right) => left - right)
     const medianPageFontSize = pageFontSizes[Math.floor(pageFontSizes.length / 2)] ?? 0
+    const visiblePageBaselines = pageItems
+      .filter(item => item.str.trim().length > 0)
+      .map(item => item.y)
+    const bottomPageBaseline = Math.min(...visiblePageBaselines)
+    const topPageBaseline = Math.max(...visiblePageBaselines)
+    const isPageFooterText = (value: string) => {
+      const matchingItems = itemsByText.get(value) ?? []
+      return matchingItems.length > 0
+        && matchingItems.every(item =>
+          item.y <= bottomPageBaseline + (topPageBaseline - bottomPageBaseline) * 0.08)
+    }
     const rawTableRunCount = lines.reduce((count, line, sourceLineIndex) =>
       count + Number(line.includes('\t') && !(lines[sourceLineIndex - 1] ?? '').includes('\t')), 0)
     const maximumRawColumnCount = Math.max(
@@ -113,6 +151,89 @@ export async function extractHTML(
       && rawTableRunCount >= 8
       && maximumRawColumnCount >= 12
       && sparseAxisLineCount >= 15
+    const fragmentedFinancialRowCount = lines.filter((line) => {
+      const cells = line.split('\t').map(cell => cell.trim()).filter(Boolean)
+      const wordCells = cells.filter((cell) => {
+        const words = cell.match(/[a-z]+/gi) ?? []
+        return /^[a-z][a-z' -]*[a-z:]$/i.test(cell) && words.length <= 2
+      })
+      const numericCells = cells.filter(cell =>
+        /^(?:[$–—-]|\(?\d[\d,.]*%?\)?)$/.test(cell))
+      return wordCells.length >= 4 && numericCells.length >= 2
+    }).length
+    const hasFragmentedFinancialTable = maximumRawColumnCount >= 10
+      && fragmentedFinancialRowCount >= 2
+      && medianPageFontSize >= 6
+    const ordinalScheduleRowCount = lines.filter(line =>
+      /(?:^|\t)\d+(?:st|nd|rd|th)(?:\t|$)/i.test(line)).length
+    const scheduleDescriptionCount = lines.filter(line =>
+      /\bafter public disclosure of\b/i.test(line)).length
+    const hasFragmentedSchedule = ordinalScheduleRowCount >= 3
+      && scheduleDescriptionCount >= 3
+    let detachedLabelRunLength = 0
+    let detachedLabelRunHasHierarchy = false
+    let hasDetachedTableLabels = false
+    for (let sourceLineIndex = 0; sourceLineIndex < lines.length; sourceLineIndex++) {
+      const sourceLine = lines[sourceLineIndex]!
+      if (!sourceLine.includes('\t')) {
+        const words = sourceLine.match(/[a-z][a-z'-]*/gi) ?? []
+        const isDetachedLabel = sourceLine.length <= 60
+          && words.length >= 1
+          && words.length <= 8
+          && !/[.!?;]$/.test(sourceLine)
+        detachedLabelRunLength = isDetachedLabel ? detachedLabelRunLength + 1 : 0
+        detachedLabelRunHasHierarchy = isDetachedLabel
+          ? detachedLabelRunHasHierarchy || /^Level \d+\b/i.test(sourceLine)
+          : false
+        continue
+      }
+
+      let unlabeledValueRowCount = 0
+      for (
+        let tableLineIndex = sourceLineIndex;
+        tableLineIndex < lines.length && lines[tableLineIndex]!.includes('\t');
+        tableLineIndex++
+      ) {
+        const tableValues = lines[tableLineIndex]!
+          .split('\t')
+          .map(value => value.trim())
+          .filter(Boolean)
+        if (
+          tableValues.length >= 3
+          && tableValues.every(value => /^(?:[$–—-]|\(?[\d,.]+%?\)?)$/.test(value))
+        ) {
+          unlabeledValueRowCount++
+        }
+      }
+      if (
+        detachedLabelRunLength >= 6
+        && detachedLabelRunHasHierarchy
+        && unlabeledValueRowCount >= 3
+      ) {
+        hasDetachedTableLabels = true
+        break
+      }
+      detachedLabelRunLength = 0
+      detachedLabelRunHasHierarchy = false
+    }
+    const detachedExhibitIdentifierCount = lines.filter(line => /^\d+\.\d+$/.test(line)).length
+    const hasDetachedExhibitIdentifiers = detachedExhibitIdentifierCount >= 5
+      && maximumRawColumnCount >= 3
+    const signatureRowCount = lines.filter(line => line.includes('/s/')).length
+    const hasFragmentedSignatures = lines.some(line => /^SIGNATURES$/i.test(line))
+      && signatureRowCount >= 3
+    const needsPositionedText = hasFragmentedFinancialTable
+      || hasFragmentedSchedule
+      || hasDetachedTableLabels
+      || hasDetachedExhibitIdentifiers
+      || hasFragmentedSignatures
+    if (needsPositionedText) {
+      return [
+        ':::spatial',
+        ...renderPositionedTextLines(pageItems, medianPageFontSize),
+        ':::',
+      ].join('\n')
+    }
     if (hasDenseSpatialCharts) {
       const firstRow = lines[0]!.split('\t').map(value => value.trim()).filter(Boolean)
       const title = firstRow[0]
@@ -378,6 +499,7 @@ export async function extractHTML(
           && previousLine.includes('\t')
           && previousTableWasPreamble
         const inferHeading = !inferredHeadingLines.has(lineIndex)
+          && !isPageFooterText(line)
           && (
             namesTableSection
             || namesCodedTableSection
@@ -419,6 +541,18 @@ export async function extractHTML(
         rows.push(lines[lineIndex]!.split('\t').map(cell =>
           cell.trim().replaceAll('\\', '\\\\').replaceAll('|', '\\|')))
         lineIndex++
+      }
+      const detachedBulletEntries = rows.flatMap((row) => {
+        const values = row.filter(Boolean)
+        return values.length === 2 && /^[-•*]$/.test(values[0]!)
+          ? [values[1]!]
+          : []
+      })
+      if (rows.length >= 2 && detachedBulletEntries.length === rows.length) {
+        structuredLines.push(
+          ...detachedBulletEntries.flatMap(entry => [`- ${entry}`, '']),
+        )
+        continue
       }
       const exactItemsForCell = (cell: string) => cell
         .split('<br>')
@@ -481,17 +615,29 @@ export async function extractHTML(
         }
         for (const [rowIndex, row] of rows.entries()) {
           const values = row.filter(Boolean)
-          const pairedNarrative = values.length >= 2 && values.some(value => value.length > 80)
-          for (const [valueIndex, value] of values.entries()) {
+          const leadingMarker = /^(?:(?:\d+|[a-z])[.)]|[-•*])$/i.test(values[0] ?? '')
+          const normalizedMarker = /^[-•*]$/.test(values[0] ?? '')
+            ? '-'
+            : values[0]?.replace(/\)$/, '.')
+          const renderedValues = leadingMarker && values[1]
+            ? [`${normalizedMarker} ${values[1]}`, ...values.slice(2)]
+            : values
+          const pairedNarrative = renderedValues.length >= 2
+            && renderedValues.some(value => value.length > 80)
+          for (const [valueIndex, value] of renderedValues.entries()) {
             const isPageTitle = rowIndex === 0
               && valueIndex === 0
               && !pageHasHeading
               && value.length <= 100
               && !/[.!?;]$/.test(value)
+              && !/^\(?continued\)?$/i.test(value)
+              && !/^\d+(?:\.\s|$)/.test(value)
+              && !/^[-•*]\s/.test(value)
             const isNarrativeLabel = rowIndex > 0
               && valueIndex === 0
               && pairedNarrative
               && value.length <= 80
+              && !/^[-•*]\s/.test(value)
             if (isPageTitle || isNarrativeLabel) {
               structuredLines.push(`${isPageTitle ? '#' : '##'} ${value}`, '')
               pageHasHeading = true
@@ -1103,9 +1249,12 @@ export async function extractHTML(
         .sort((left, right) => left - right)
       const medianFollowingHeaderFontSize
         = followingHeaderFontSizes[Math.floor(followingHeaderFontSizes.length / 2)] ?? 0
-      const leadingCaptionLooksLikeTitle = (leadingCaptionText?.match(/[a-z]+/gi)?.length ?? 0) >= 2
-        || (medianFollowingHeaderFontSize > 0
-          && leadingCaptionFontSize >= medianFollowingHeaderFontSize * 1.1)
+      const leadingCaptionFirstLetter = leadingCaptionText?.match(/[a-z]/i)?.[0]
+      const leadingCaptionLooksLikeTitle = leadingCaptionFirstLetter
+        === leadingCaptionFirstLetter?.toUpperCase()
+        && ((leadingCaptionText?.match(/[a-z]+/gi)?.length ?? 0) >= 2
+          || (medianFollowingHeaderFontSize > 0
+            && leadingCaptionFontSize >= medianFollowingHeaderFontSize * 1.1))
       const leadingCaption = leadingCaptionCells.length === 1
         && leadingCaptionCells[0]!.columnIndex > 0
         && followingRowsLookLikeHeaders
@@ -1181,6 +1330,7 @@ export async function extractHTML(
               || cell.endsWith(':')
               || words.length === 0
               || words.length > 12
+              || isPageFooterText(cell)
             ) {
               return []
             }
@@ -1436,7 +1586,12 @@ export async function extractHTML(
 
   inheritContinuationContext(structuredPages)
   const articles = structuredPages.map((page, pageIndex) =>
-    renderPageArticle(page, pageIndex + 1, extractedItems.items[pageIndex] ?? []))
+    renderPageArticle(
+      page,
+      pageIndex + 1,
+      extractedItems.items[pageIndex] ?? [],
+      pageImages?.[pageIndex],
+    ))
 
   return {
     totalPages,
@@ -1485,13 +1640,61 @@ type PageBlock
 interface OrderedListEntry {
   depth: number
   marker: 'decimal' | 'lower-alpha'
+  ordinal: number
   text: string
+}
+
+function renderPositionedTextLines(
+  positionedText: StructuredTextItem[],
+  medianFontSize: number,
+): string[] {
+  const visibleText = positionedText
+    .filter(text => text.str.trim().length > 0)
+    .sort((left, right) => right.y - left.y || left.x - right.x)
+  const characterWidths = visibleText
+    .filter(text => text.width > 0)
+    .map(text => text.width / [...text.str.trim()].length)
+    .sort((left, right) => left - right)
+  const medianCharacterWidth = characterWidths[Math.floor(characterWidths.length / 2)]
+    ?? Math.max(1, medianFontSize * 0.5)
+  const leftEdge = Math.min(...visibleText.map(text => text.x))
+  const lines: Array<{ y: number, text: StructuredTextItem[] }> = []
+
+  for (const text of visibleText) {
+    const line = lines.find(candidate =>
+      Math.abs(candidate.y - text.y) <= text.fontSize * 0.8)
+    if (!line) {
+      lines.push({ y: text.y, text: [text] })
+      continue
+    }
+    const duplicate = line.text.some(candidate =>
+      candidate.str === text.str
+      && Math.abs(candidate.x - text.x) <= text.fontSize * 0.1
+      && Math.abs(candidate.y - text.y) <= text.fontSize * 0.1)
+    if (!duplicate) {
+      line.text.push(text)
+    }
+  }
+
+  return lines.map((line) => {
+    let renderedLine = ''
+    let renderedLength = 0
+    for (const text of line.text.sort((left, right) => left.x - right.x)) {
+      const value = text.str.trim()
+      const targetColumn = Math.round((text.x - leftEdge) / medianCharacterWidth)
+      const gap = Math.max(renderedLine.length === 0 ? 0 : 1, targetColumn - renderedLength)
+      renderedLine += `${' '.repeat(gap)}${value}`
+      renderedLength += gap + [...value].length
+    }
+    return renderedLine
+  })
 }
 
 function renderPageArticle(
   page: string,
   pageNumber: number,
   positionedText: StructuredTextItem[],
+  pageImage?: string,
 ): string {
   const blocks = repairJoinedTableCells(mergeTableSections(enrichTableHeaders(
     splitParallelTables(attachTrailingCellContinuations(parsePageBlocks(page))),
@@ -1508,7 +1711,10 @@ function renderPageArticle(
       || populated.some(cell => cell !== populated[0] || cell.length !== 1)
   })
   const content = blocks.map(renderPageBlock).join('\n')
-  return `<article class="pdf-page" data-page-number="${pageNumber}">\n${content}\n</article>`
+  const preservedLayout = pageImage
+    ? `<figure class="pdf-page-render"><img alt="" src="${pageImage}"></figure>\n`
+    : ''
+  return `<article class="pdf-page" data-page-number="${pageNumber}">\n${preservedLayout}${content}\n</article>`
 }
 
 function repairJoinedTableCells(
@@ -1706,6 +1912,8 @@ function renderHTMLDocument(content: string, title: string): string {
 <style>
 body { color: #1f2937; font-family: system-ui, sans-serif; line-height: 1.45; margin: 2rem; }
 .pdf-page { margin: 0 auto 3rem; max-width: 100%; }
+.pdf-page-render { margin: 0 0 2rem; max-width: 100%; }
+.pdf-page-render img { display: block; height: auto; max-width: 100%; }
 .page-break { border: 0; border-top: 2px solid #94a3b8; margin: 3rem 0; }
 .report-metadata { background: #f8fafc; border: 1px solid #cbd5e1; margin: 1rem 0; padding: .75rem 1rem; }
 .metadata-row { display: flex; flex-wrap: wrap; gap: .5rem 2rem; margin: .25rem 0; }
@@ -1779,17 +1987,29 @@ function parsePageBlocks(page: string): PageBlock[] {
       continue
     }
 
-    if (/^\s*(?:\d+|[a-z])\.\s+/i.test(line)) {
+    const orderedListStart = /^\s*(\d+|[a-z])\.\s+/i.exec(line)
+    const orderedListStartNumber = Number(orderedListStart?.[1])
+    const orderedListStartsWithCalendarYear = Number.isInteger(orderedListStartNumber)
+      && orderedListStartNumber >= 1900
+      && orderedListStartNumber <= 2100
+    if (orderedListStart && !orderedListStartsWithCalendarYear) {
       const entries: OrderedListEntry[] = []
       while (lineIndex < lines.length) {
         const entryLine = lines[lineIndex]!
         const marker = /^(\s*)(\d+|[a-z])\. /i.exec(entryLine)
-        if (!marker) {
+        const numericMarker = Number(marker?.[2])
+        const markerIsCalendarYear = Number.isInteger(numericMarker)
+          && numericMarker >= 1900
+          && numericMarker <= 2100
+        if (!marker || markerIsCalendarYear) {
           break
         }
         entries.push({
           depth: Math.floor(marker[1]!.length / 3),
           marker: /^\d+$/.test(marker[2]!) ? 'decimal' : 'lower-alpha',
+          ordinal: /^\d+$/.test(marker[2]!)
+            ? Number(marker[2])
+            : marker[2]!.toLowerCase().charCodeAt(0) - 96,
           text: entryLine.slice(marker[0].length),
         })
         lineIndex++
@@ -1821,9 +2041,14 @@ function parsePageBlocks(page: string): PageBlock[] {
     const paragraphLines: string[] = []
     while (lineIndex < lines.length && lines[lineIndex]!.length > 0) {
       const candidate = lines[lineIndex]!
+      const candidateOrderedList = /^\s*(\d+|[a-z])\.\s+/i.exec(candidate)
+      const candidateOrderedListNumber = Number(candidateOrderedList?.[1])
+      const candidateStartsWithCalendarYear = Number.isInteger(candidateOrderedListNumber)
+        && candidateOrderedListNumber >= 1900
+        && candidateOrderedListNumber <= 2100
       if (
         /^(?:#{1,6}|- |> )/.test(candidate)
-        || /^\s*(?:\d+|[a-z])\.\s+/i.test(candidate)
+        || (candidateOrderedList && !candidateStartsWithCalendarYear)
         || (structuredTableCells(candidate)
           && /^\|(?:\s*---\s*\|)+$/.test(lines[lineIndex + 1] ?? ''))
       ) {
@@ -2613,22 +2838,46 @@ function renderPageBlock(block: PageBlock): string {
 }
 
 function renderOrderedList(entries: OrderedListEntry[]): string {
-  const parents: Array<{ text: string, children: OrderedListEntry[] }> = []
+  const parents: Array<{ entry: OrderedListEntry, children: OrderedListEntry[] }> = []
   for (const entry of entries) {
     if (entry.depth === 0 || parents.length === 0) {
-      parents.push({ text: entry.text, children: [] })
+      parents.push({ entry, children: [] })
       continue
     }
     parents.at(-1)!.children.push(entry)
   }
 
-  const renderedEntries = parents.map((parent) => {
+  const listAttributes = (listEntries: OrderedListEntry[]) => {
+    const type = listEntries.every(entry => entry.marker === 'lower-alpha')
+      ? ' type="a"'
+      : ''
+    const start = listEntries[0]?.ordinal !== 1
+      ? ` start="${listEntries[0]!.ordinal}"`
+      : ''
+    return `${type}${start}`
+  }
+  const renderEntries = (listEntries: OrderedListEntry[]) => {
+    let expectedOrdinal = listEntries[0]?.ordinal ?? 1
+    return listEntries.map((entry) => {
+      const value = entry.ordinal === expectedOrdinal ? '' : ` value="${entry.ordinal}"`
+      expectedOrdinal = entry.ordinal + 1
+      return `<li${value}>${renderInline(entry.text)}</li>`
+    }).join('\n')
+  }
+  const renderedEntries = parents.map((parent, parentIndex) => {
     const children = parent.children.length === 0
       ? ''
-      : `\n<ol${parent.children.every(child => child.marker === 'lower-alpha') ? ' type="a"' : ''}>\n${parent.children.map(child => `<li>${renderInline(child.text)}</li>`).join('\n')}\n</ol>`
-    return `<li>${renderInline(parent.text)}${children}</li>`
+      : `\n<ol${listAttributes(parent.children)}>\n${renderEntries(parent.children)}\n</ol>`
+    const previousOrdinal = parents[parentIndex - 1]?.entry.ordinal
+    const expectedOrdinal = previousOrdinal === undefined
+      ? parent.entry.ordinal
+      : previousOrdinal + 1
+    const value = parent.entry.ordinal === expectedOrdinal
+      ? ''
+      : ` value="${parent.entry.ordinal}"`
+    return `<li${value}>${renderInline(parent.entry.text)}${children}</li>`
   })
-  return `<ol>\n${renderedEntries.join('\n')}\n</ol>`
+  return `<ol${listAttributes(parents.map(parent => parent.entry))}>\n${renderedEntries.join('\n')}\n</ol>`
 }
 
 function isReportMetadata(table: TableBlock): boolean {
@@ -2798,6 +3047,13 @@ function inferAnchoredColumnGroups(header: string[]): Array<{
 
 function renderInline(value: string): string {
   const unescaped = value.replace(/\\([\\|#])/g, '$1')
+  if (unescaped.startsWith('**') && unescaped.endsWith('**')) {
+    const emphasized = unescaped.slice(2, -2)
+      .split('<br>')
+      .map(escapeHTML)
+      .join('<br>')
+    return `<strong>${emphasized}</strong>`
+  }
   return unescaped.split('<br>').map((part) => {
     const escaped = escapeHTML(part)
     return escaped
@@ -2899,10 +3155,12 @@ function stitchWrappedRows(
   const isTrailingFinancialContinuation = (row: string[]) => {
     const populatedColumnIndexes = row.flatMap((cell, columnIndex) =>
       cell ? [columnIndex] : [])
+    const populatedValues = populatedColumnIndexes.map(columnIndex => row[columnIndex]!)
     return populatedColumnIndexes.length >= 1
       && populatedColumnIndexes.length <= 4
       && populatedColumnIndexes[0]! >= Math.floor(columnCount / 2)
       && populatedColumnIndexes.every(columnIndex => isNumericCell(row[columnIndex]!))
+      && !populatedValues.every(value => /^(?:19|20)\d{2}$/.test(value))
   }
 
   let stitchedRows: string[][]
@@ -3121,12 +3379,13 @@ function inheritContinuationContext(structuredPages: string[]): void {
     const previousPage = structuredPages[pageIndex - 1]!
     const previousTitle = /^# (.+)$/m.exec(previousPage)?.[1]
       ?.replace(/ \(continued\)$/, '')
-    if (!previousTitle) {
+    if (!previousTitle || /^\(?continued\)?$/i.test(previousTitle)) {
       continue
     }
 
     const previousHeaders = tableHeadersByColumnCount(previousPage)
     const lines = page.split('\n')
+    let inheritedTableContext = false
     const pageTitle = inferPageTitleBeforeTable(lines)
     if (pageTitle) {
       const titleIndex = lines.indexOf(pageTitle)
@@ -3140,11 +3399,25 @@ function inheritContinuationContext(structuredPages: string[]): void {
       ) {
         continue
       }
+      const precedingLines = lines.slice(0, lineIndex)
+      const localCaptionIndex = precedingLines.findLastIndex(line =>
+        /\bTable \d+[a-z]?\./i.test(line))
+      const localTableRows = precedingLines
+        .slice(localCaptionIndex + 1)
+        .filter(line => !/^\|(?:\s*---\s*\|)+$/.test(line))
+        .flatMap(line => structuredTableCells(line) ?? [])
+      const localCaptionIntroducesTable = localCaptionIndex >= 0
+        && localTableRows.every(cell =>
+          !isStructuredNumericCell(cell.replaceAll('**', '')))
+      if (localCaptionIntroducesTable) {
+        continue
+      }
 
       if (cells.every(cell => cell.length === 0)) {
         const inheritedHeader = previousHeaders.get(cells.length)
         if (inheritedHeader && cells.length >= 4) {
           lines[lineIndex] = inheritedHeader
+          inheritedTableContext = true
         }
         continue
       }
@@ -3177,6 +3450,7 @@ function inheritContinuationContext(structuredPages: string[]): void {
 
       const [columnCount, inheritedHeader] = compatibleHeader
       lines[lineIndex] = inheritedHeader
+      inheritedTableContext = true
       lines[lineIndex + 1] = renderStructuredRow(
         Array.from<string>({ length: columnCount }).fill('---'),
       )
@@ -3259,9 +3533,16 @@ function inheritContinuationContext(structuredPages: string[]): void {
         }
         lines[rowIndex] = renderStructuredRow(row)
       }
+      inheritedTableContext = true
     }
     const inheritedPage = lines.join('\n')
+    const firstTableLine = lines.findIndex(line => structuredTableCells(line) !== undefined)
+    const hasLeadingContent = lines
+      .slice(0, firstTableLine < 0 ? lines.length : firstTableLine)
+      .some(line => line.length > 0 && !/^\d+$/.test(line))
     structuredPages[pageIndex] = /^# /m.test(inheritedPage)
+      || !inheritedTableContext
+      || hasLeadingContent
       ? inheritedPage
       : `# ${previousTitle} (continued)\n\n${inheritedPage}`
   }
@@ -3275,10 +3556,12 @@ function inferPageTitleBeforeTable(lines: string[]): string | undefined {
   const leadingLines = lines.slice(0, firstTableLine < 0 ? lines.length : firstTableLine)
   const candidates = leadingLines.filter((line) => {
     const words = line.match(/[a-z][a-z'-]*/gi) ?? []
+    const firstLetter = line.match(/[a-z]/i)?.[0]
     return line.length >= 4
       && line.length <= 100
       && words.length >= 2
       && words.length <= 12
+      && firstLetter === firstLetter?.toUpperCase()
       && !/^(?:As of|Parameters?|Period|Book|Sort On|Posted by|Fiscal Period|Report Date|For \d)/i.test(line)
       && !/[.!?;]$|https?:\/\/|\S+@\S+/.test(line)
   })

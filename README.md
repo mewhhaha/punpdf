@@ -256,7 +256,7 @@ function extractTextItems(
 
 ### `extractHTML`
 
-Extracts each page in visual reading order as a complete HTML document. Report headings, paragraphs, nested outlines, lists, metadata, and tables use semantic elements. Dense tables use complete visual rows to keep narrowly spaced values in separate cells, adjacent sidebar text stays outside the detected grid, and wrapped cells use `<br>` without becoming extra columns. Stacked and grouped headers use `<thead>`, `scope`, `rowspan`, and `colspan`; full-width table sections and subtotal rows retain their structure and emphasis. Continuation pages inherit the preceding report title and compatible table headers.
+Extracts each page in visual reading order as a complete HTML document. Report headings, paragraphs, nested outlines, lists, metadata, and tables use semantic elements. Dense tables use complete visual rows to keep narrowly spaced values in separate cells, adjacent sidebar text stays outside the detected grid, and wrapped cells use `<br>` without becoming extra columns. Stacked and grouped headers use `<thead>`, `scope`, `rowspan`, and `colspan`; full-width table sections and subtotal rows retain their structure and emphasis. Continuation pages inherit compatible table headers only when the next page provides continuation evidence. Financial grids, exhibit indexes, and signature blocks whose positioned text cannot support reliable semantic associations use spatial `<pre>` markup instead.
 
 PDFs generally store positioned text rather than document semantics, so structure is inferred from reusable layout evidence such as alignment, spacing, repetition, and visual prominence. The result is intended for browser viewing and HTML-aware language models.
 
@@ -269,6 +269,18 @@ const { html } = await extractHTML(buffer, { mergePages: true })
 console.log(html)
 ```
 
+Set `preserveLayout` to include a rendered image of every source page before its semantic content. This retains charts, logos, signatures, and other non-text visuals at the cost of larger HTML. Node.js callers must provide the optional `@napi-rs/canvas` import.
+
+```ts
+const { html } = await extractHTML(buffer, {
+  mergePages: true,
+  preserveLayout: {
+    canvasImport: () => import('@napi-rs/canvas'),
+    scale: 1,
+  },
+})
+```
+
 **Type Declaration**
 
 ```ts
@@ -276,6 +288,10 @@ function extractHTML(
   data: DocumentInitParameters['data'] | PDFDocumentProxy,
   options?: {
     mergePages?: false
+    preserveLayout?: {
+      canvasImport?: () => Promise<typeof import('@napi-rs/canvas')>
+      scale?: number
+    }
   },
 ): Promise<{
   totalPages: number
@@ -285,6 +301,10 @@ function extractHTML(
   data: DocumentInitParameters['data'] | PDFDocumentProxy,
   options: {
     mergePages: true
+    preserveLayout?: {
+      canvasImport?: () => Promise<typeof import('@napi-rs/canvas')>
+      scale?: number
+    }
   },
 ): Promise<{
   totalPages: number

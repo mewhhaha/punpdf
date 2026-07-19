@@ -262,6 +262,142 @@ describe('punpdf', () => {
     expect(html).toContain('<h1>About Antenna House</h1>')
   })
 
+  it('does not carry a report title into an independent table page', async () => {
+    const { html } = await extractHTML(await getPDF('independent-table-pages.pdf'))
+
+    expect(html[1]).not.toContain('Legal and Other Contingencies (continued)')
+    expect(html[1]).toContain('CONSOLIDATED STATEMENTS OF OPERATIONS')
+    expect(html[1]).toContain('Net sales')
+  })
+
+  it('does not inherit a prior header into a locally captioned table', async () => {
+    const { html } = await extractHTML(await getPDF('local-table-caption.pdf'))
+
+    expect(html[1]).toContain('Table 11b. Local assets and liabilities')
+    expect(html[1]).toContain('Cash')
+    expect(html[1]).not.toContain('Legacy category')
+    expect(html[1]).not.toContain('Legacy current')
+  })
+
+  it('does not promote a lowercase table-header fragment to a page title', async () => {
+    const { html } = await extractHTML(await getPDF('lowercase-table-caption.pdf'))
+
+    expect(html[0]).toContain('reporting date using')
+    expect(html[0]).not.toContain('<h1>reporting date using</h1>')
+  })
+
+  it('does not promote continuation footer furniture to a page title', async () => {
+    const { html } = await extractHTML(await getPDF('continued-footer.pdf'))
+
+    expect(html[0]).toContain('Continued')
+    expect(html[0]).not.toContain('<h1>Continued</h1>')
+  })
+
+  it('preserves source ordinals when legal sections are separate lists', async () => {
+    const { html } = await extractHTML(await getPDF('legal-sections.pdf'))
+
+    expect(html[0]).toContain('<ol start="5">')
+    expect(html[0]).toContain('<ol start="6">')
+    expect(html[0]).toContain('<ol start="7">')
+    expect(html[0]).toContain('<li>Dividend and Voting Rights.</li>')
+  })
+
+  it('uses spatial markup for a word-fragmented financial grid', async () => {
+    const { html } = await extractHTML(await getPDF('fragmented-financial-table.pdf'))
+
+    expect(html[0]).toContain('<figure class="spatial-content"><pre>')
+    expect(html[0]).toMatch(/Treasury\s+securities/)
+    expect(html[0]).not.toContain('<table>')
+  })
+
+  it('uses positioned spatial markup for a fragmented compact schedule', async () => {
+    const { html } = await extractHTML(await getPDF('compact-schedule.pdf'))
+
+    expect(html[0]).toContain('<figure class="spatial-content"><pre>')
+    expect(html[0]).toMatch(/1st\s+December 1/)
+    expect(html[0]).toMatch(/4th\s+September 1/)
+    expect(html[0]).not.toContain('<table>')
+  })
+
+  it('uses spatial markup when financial labels detach from their values', async () => {
+    const { html } = await extractHTML(await getPDF('detached-financial-labels.pdf'))
+
+    expect(html[0]).toContain('<figure class="spatial-content"><pre>')
+    expect(html[0]).toContain('Cash')
+    expect(html[0]).toMatch(/800\s+800\s+800/)
+  })
+
+  it('keeps detached exhibit identifiers aligned with their rows', async () => {
+    const { html } = await extractHTML(await getPDF('detached-exhibit-identifiers.pdf'))
+
+    expect(html[0]).toContain('<figure class="spatial-content"><pre>')
+    expect(html[0]).toMatch(/4\.10\s+Officer Certificate\s+8-K 4\.1\s+2\/23\/16/)
+    expect(html[0]).toMatch(/4\.16\s+Officer Certificate\s+8-K 4\.1\s+2\/29\/16/)
+  })
+
+  it('keeps signature names, roles, and dates on the same row', async () => {
+    const { html } = await extractHTML(await getPDF('fragmented-signatures.pdf'))
+
+    expect(html[0]).toContain('<figure class="spatial-content"><pre>')
+    expect(html[0]).toMatch(/\/s\/ Alex Example\s+Chief Executive Officer\s+November 1 2024/)
+    expect(html[0]).toMatch(/\/s\/ Casey Example\s+Director\s+November 1 2024/)
+  })
+
+  it('groups detached bullet markers with their entries', async () => {
+    const { html } = await extractHTML(await getPDF('detached-bullets.pdf'))
+
+    expect(html[0]).toContain('<ul>')
+    expect(html[0]).toContain('<li>Purchases under the employee stock plan are permitted</li>')
+    expect(html[0]).not.toMatch(/<h[1-6]>[-•*]<\/h[1-6]>/)
+  })
+
+  it('does not treat a calendar year at a paragraph boundary as a list item', async () => {
+    const { html } = await extractHTML(await getPDF('calendar-year-continuation.pdf'))
+
+    expect(html[0]).toContain('2024. At June 30 2024 remittances remained suspended.')
+    expect(html[0]).not.toContain('<ol start="2024">')
+  })
+
+  it('does not leak Markdown emphasis around a wrapped summary cell', async () => {
+    const { html } = await extractHTML(await getPDF('wrapped-summary.pdf'))
+
+    expect(html[0]).toContain('<strong>Total net sales</strong>')
+    expect(html[0]).not.toContain('<strong>$<br>2024</strong>')
+    expect(html[0]).not.toContain('**')
+  })
+
+  it('can preserve the rendered page beside extracted semantic content', async () => {
+    const { html } = await extractHTML(await getPDF('pdflatex-image.pdf'), {
+      preserveLayout: {
+        canvasImport: () => import('@napi-rs/canvas'),
+        scale: 0.5,
+      },
+    })
+
+    expect(html[0]).toContain('<figure class="pdf-page-render"><img alt="" src="data:image/png;base64,')
+    expect(html[0]).toContain('<article class="pdf-page" data-page-number="1">')
+  })
+
+  it('preserves layout without taking ownership of a PDF document proxy', async () => {
+    const pdf = await getDocumentProxy(await getPDF('pdflatex-image.pdf'))
+
+    try {
+      const { html } = await extractHTML(pdf, {
+        mergePages: true,
+        preserveLayout: {
+          canvasImport: () => import('@napi-rs/canvas'),
+          scale: 0.25,
+        },
+      })
+
+      expect(html).toContain('<figure class="pdf-page-render"><img alt="" src="data:image/png;base64,')
+      expect((await pdf.getMetadata()).info).toBeDefined()
+    }
+    finally {
+      await pdf.destroy()
+    }
+  })
+
   it('extracts structured text items from a PDF', async () => {
     const { items, totalPages } = await extractTextItems(await getPDF())
 
