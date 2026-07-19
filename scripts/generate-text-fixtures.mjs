@@ -404,6 +404,47 @@ writeFileSync(
 )
 console.log('wrote test/fixtures/aligned-narrative-columns.pdf')
 
+const narrativeGridAfterTable = [
+  { text: 'Service Overview', x: 40, y: 810, size: 14 },
+  { text: 'Locations', x: 40, y: 770, size: 8 },
+  { text: '58', x: 300, y: 770, size: 8 },
+  { text: '55', x: 450, y: 770, size: 8 },
+  { text: 'Customers', x: 40, y: 750, size: 8 },
+  { text: '41', x: 300, y: 750, size: 8 },
+  { text: '39', x: 450, y: 750, size: 8 },
+  { text: 'Details', x: 40, y: 710, size: 8 },
+  ...[
+    ['Regional reach', 'Teams serve customers across several markets'],
+    ['Core services', 'Specialists support local business requirements'],
+    ['Delivery model', 'Four groups coordinate the operating programme'],
+  ].flatMap((row, rowIndex) => row.map((text, columnIndex) => ({
+    text,
+    x: [40, 240][columnIndex],
+    y: 680 - rowIndex * 16,
+    size: 8,
+  }))),
+  { text: 'The programme continues in the following section.', x: 40, y: 610, size: 8 },
+]
+const narrativeGridAfterLabels = [
+  { text: 'Account Overview', x: 40, y: 810, size: 14 },
+  { text: 'Accounts', x: 40, y: 770, size: 8 },
+  { text: '24', x: 300, y: 770, size: 8 },
+  { text: '22', x: 450, y: 770, size: 8 },
+  { text: 'Details', x: 40, y: 710, size: 8 },
+  { text: 'Overview', x: 40, y: 694, size: 8 },
+  { text: 'Service scope', x: 40, y: 660, size: 8 },
+  { text: 'Advisers cover commercial accounts', x: 240, y: 660, size: 8 },
+  { text: 'Review cycle', x: 40, y: 644, size: 8 },
+  { text: 'Teams report progress every quarter', x: 240, y: 644, size: 8 },
+]
+writeFileSync(
+  join(fixturesDir, 'narrative-grid-after-table.pdf'),
+  pdfFromRuns(narrativeGridAfterTable, {
+    additionalPages: [narrativeGridAfterLabels],
+  }),
+)
+console.log('wrote test/fixtures/narrative-grid-after-table.pdf')
+
 const fragmentedParallelNarrative = [
   { text: 'Parallel Narrative Report', x: 40, y: 810, size: 14 },
   ...[

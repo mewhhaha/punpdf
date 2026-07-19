@@ -2383,9 +2383,12 @@ function mergeTableSections(blocks: PageBlock[]): PageBlock[] {
         break
       }
       const bridgedContinuation = blocks[continuationIndex]
+      const bridgedContinuationHasRows = bridgedContinuation?.kind === 'table'
+        && bridgedContinuation.body.some(row => row.kind === 'row')
       if (
         bridgedLabels.length > 1
         && bridgedContinuation?.kind === 'table'
+        && bridgedContinuationHasRows
         && headersMatch(table.header, bridgedContinuation.header)
       ) {
         const alignedRows = bridgedContinuation.body.map((row) => {
@@ -2458,6 +2461,7 @@ function mergeTableSections(blocks: PageBlock[]): PageBlock[] {
         (!sectionLabel && !sparseRowLabels)
         || (sectionLabel?.length ?? 0) > 80
         || continuation.kind !== 'table'
+        || continuationRows.length === 0
         || !headersMatch(table.header, continuation.header)
       ) {
         break

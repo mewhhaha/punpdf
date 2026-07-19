@@ -377,6 +377,19 @@ describe('punpdf', () => {
     )
   })
 
+  it('preserves a narrative grid after a labeled table', async () => {
+    const { html } = await extractHTML(await getPDF('narrative-grid-after-table.pdf'))
+
+    expect(html[0]).toContain('Details')
+    expect(html[0]).toContain('Regional reach')
+    expect(html[0]).toContain('Teams serve customers across several markets')
+    expect(html[0]).toContain('Four groups coordinate the operating programme')
+    expect(html[0]).toContain('The programme continues in the following section.')
+    expect(html[1]).toContain('Service scope')
+    expect(html[1]).toContain('Advisers cover commercial accounts')
+    expect(html[1]).toContain('Teams report progress every quarter')
+  })
+
   it('uses spatial markup for fragmented parallel narrative sections', async () => {
     const { html } = await extractHTML(await getPDF('fragmented-parallel-narrative.pdf'))
 
