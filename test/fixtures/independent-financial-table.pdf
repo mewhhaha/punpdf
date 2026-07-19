@@ -1,0 +1,51 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 963 >>
+stream
+BT /F1 14 Tf 1 0 0 1 40 810 Tm (Valuation notes) Tj ET
+BT /F1 8 Tf 1 0 0 1 40 780 Tm (Opening balance) Tj ET
+BT /F1 8 Tf 1 0 0 1 380 780 Tm (100) Tj ET
+BT /F1 8 Tf 1 0 0 1 500 780 Tm (90) Tj ET
+BT /F1 8 Tf 1 0 0 1 40 760 Tm (Closing balance) Tj ET
+BT /F1 8 Tf 1 0 0 1 380 760 Tm (110) Tj ET
+BT /F1 8 Tf 1 0 0 1 500 760 Tm (95) Tj ET
+BT /F1 8 Tf 1 0 0 1 40 730 Tm (Independent valuation schedule) Tj ET
+BT /F1 8 Tf 1 0 0 1 40 714 Tm (Measured at year end) Tj ET
+BT /F1 8 Tf 1 0 0 1 280 690 Tm (Cost) Tj ET
+BT /F1 8 Tf 1 0 0 1 380 690 Tm (Fair value) Tj ET
+BT /F1 8 Tf 1 0 0 1 500 690 Tm (Total) Tj ET
+BT /F1 8 Tf 1 0 0 1 40 670 Tm (Government bonds) Tj ET
+BT /F1 8 Tf 1 0 0 1 280 670 Tm (120) Tj ET
+BT /F1 8 Tf 1 0 0 1 380 670 Tm (125) Tj ET
+BT /F1 8 Tf 1 0 0 1 500 670 Tm (245) Tj ET
+BT /F1 8 Tf 1 0 0 1 40 650 Tm (Corporate bonds) Tj ET
+BT /F1 8 Tf 1 0 0 1 280 650 Tm (30) Tj ET
+BT /F1 8 Tf 1 0 0 1 380 650 Tm (35) Tj ET
+BT /F1 8 Tf 1 0 0 1 500 650 Tm (65) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000001255 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1325
+%%EOF

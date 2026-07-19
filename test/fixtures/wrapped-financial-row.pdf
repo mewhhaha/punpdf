@@ -1,0 +1,44 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 600 >>
+stream
+BT /F1 14 Tf 1 0 0 1 40 810 Tm (Indemnity balance) Tj ET
+BT /F1 8 Tf 1 0 0 1 40 780 Tm (Opening balance) Tj ET
+BT /F1 8 Tf 1 0 0 1 380 780 Tm (100) Tj ET
+BT /F1 8 Tf 1 0 0 1 500 780 Tm (90) Tj ET
+BT /F1 8 Tf 1 0 0 1 40 760 Tm (Movement) Tj ET
+BT /F1 8 Tf 1 0 0 1 380 760 Tm (20) Tj ET
+BT /F1 8 Tf 1 0 0 1 500 760 Tm (15) Tj ET
+BT /F1 8 Tf 1 0 0 1 40 730 Tm (Closing balance) Tj ET
+BT /F1 8 Tf 1 0 0 1 102 730 Tm (as at) Tj ET
+BT /F1 8 Tf 1 0 0 1 40 710 Tm (31) Tj ET
+BT /F1 8 Tf 1 0 0 1 120 710 Tm (December) Tj ET
+BT /F1 8 Tf 1 0 0 1 380 710 Tm (120) Tj ET
+BT /F1 8 Tf 1 0 0 1 500 710 Tm (105) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000000892 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+962
+%%EOF

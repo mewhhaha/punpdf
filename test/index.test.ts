@@ -286,6 +286,44 @@ describe('punpdf', () => {
     expect(html[0]).not.toContain('<h1>reporting date using</h1>')
   })
 
+  it('keeps every column when a financial table header precedes its section label', async () => {
+    const { html } = await extractHTML(await getPDF('detached-financial-table-header.pdf'))
+
+    expect(html[0]).toContain('<tr><th scope="col"></th><th scope="col">Note</th><th scope="col">Current</th><th scope="col">Prior</th></tr>')
+    expect(html[0]).toContain('<tr><th scope="row">Cash</th><td>3</td><td>120</td><td>110</td></tr>')
+    expect(html[0]).toContain('<tr><th scope="row">Investments</th><td>4</td><td>240</td><td>220</td></tr>')
+  })
+
+  it('keeps every column beneath a stacked financial table header', async () => {
+    const { html } = await extractHTML(await getPDF('detached-financial-table-header.pdf'))
+
+    expect(html[1]).toContain('<th scope="col"></th>')
+    expect(html[1]).toContain('<tr><th scope="row">Opening balance</th><td>120</td><td>240</td><td>360</td></tr>')
+    expect(html[1]).toContain('<tr><th scope="row">Closing balance</th><td>130</td><td>260</td><td>390</td></tr>')
+  })
+
+  it('keeps the first text-only financial record in the table body', async () => {
+    const { html } = await extractHTML(await getPDF('financial-record-after-header.pdf'))
+
+    expect(html[0]).toContain('<th scope="col">As at year end</th>')
+    expect(html[0]).toContain('<tr><th scope="row">with partner banks<br>Central Bank A</th><td>Dollars</td><td>No expiry</td><td>Unlimited</td></tr>')
+    expect(html[0]).toContain('<tr><th scope="row">Central Bank B</th><td>Euros</td><td>Annual</td><td>500</td></tr>')
+  })
+
+  it('does not merge an independently headed financial table into the preceding table', async () => {
+    const { html } = await extractHTML(await getPDF('independent-financial-table.pdf'))
+
+    expect(html[0]!.match(/<table>/g)).toHaveLength(2)
+    expect(html[0]).toContain('<th scope="col">Total</th>')
+    expect(html[0]).toContain('<tr><th scope="row">Government bonds</th><td>120</td><td>125</td><td>245</td></tr>')
+  })
+
+  it('joins a wrapped financial row label without dropping its trailing value', async () => {
+    const { html } = await extractHTML(await getPDF('wrapped-financial-row.pdf'))
+
+    expect(html[0]).toContain('<tr><th scope="row">31 December</th><td>120</td><td>105</td></tr>')
+  })
+
   it('does not promote continuation footer furniture to a page title', async () => {
     const { html } = await extractHTML(await getPDF('continued-footer.pdf'))
 

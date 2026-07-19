@@ -2389,6 +2389,8 @@ function mergeTableSections(blocks: PageBlock[]): PageBlock[] {
         bridgedLabels.length > 1
         && bridgedContinuation?.kind === 'table'
         && bridgedContinuationHasRows
+        && !(table.header.every(cell => cell.length === 0)
+          && bridgedContinuation.header.some(cell => cell.length > 0))
         && headersMatch(table.header, bridgedContinuation.header)
       ) {
         const alignedRows = bridgedContinuation.body.map((row) => {
@@ -2462,12 +2464,66 @@ function mergeTableSections(blocks: PageBlock[]): PageBlock[] {
         || (sectionLabel?.length ?? 0) > 80
         || continuation.kind !== 'table'
         || continuationRows.length === 0
+        || (table.header.every(cell => cell.length === 0)
+          && continuation.header.some(cell => cell.length > 0)
+          && table.header.length !== continuation.header.length)
         || !headersMatch(table.header, continuation.header)
       ) {
         break
       }
-      const alignedRows = continuation.body.map((row) => {
-        if (row.kind !== 'row' || row.cells.length >= table.header.length) {
+      const promotedDetachedHeader = table.body.length === 0
+        && table.header.some(cell => cell.length > 0)
+        && continuation.header.every(cell => cell.length === 0)
+        && continuation.header.length === table.header.length + 1
+      if (promotedDetachedHeader) {
+        table.header = ['', ...table.header]
+      }
+      const detachedHeaderRows = table.body.flatMap(row => row.kind === 'row' ? [row.cells] : [])
+      const detachedHeaderOffset = continuation.header.length - table.header.length
+      const detachedHeader = table.header.every(cell => cell.length === 0)
+        && detachedHeaderRows.length === table.body.length
+        && detachedHeaderRows.length >= 1
+        && detachedHeaderRows.length <= 4
+        && detachedHeaderOffset >= 0
+        && detachedHeaderOffset <= 1
+        && detachedHeaderRows.every(row =>
+          row.filter(Boolean).length >= 2
+          && row.every(cell =>
+            parseFinancialValue(cell) === undefined
+            || /^(?:19|20)\d{2}$/.test(cell)))
+      let rowsToAlign = continuation.body
+      if (detachedHeader) {
+        const alignedHeaderRows = detachedHeaderRows.map(row => [
+          ...Array.from<string>({ length: detachedHeaderOffset }).fill(''),
+          ...row,
+        ])
+        table.header = combineHeaderRows(alignedHeaderRows, continuation.header.length)
+        table.body = []
+        if (
+          continuation.header.some(cell => cell.length > 0)
+          && !headersMatch(table.header, continuation.header)
+        ) {
+          rowsToAlign = [
+            { kind: 'row', cells: continuation.header },
+            ...rowsToAlign,
+          ]
+        }
+      }
+      const alignedRows = rowsToAlign.map((row) => {
+        if (row.kind !== 'row') {
+          return row
+        }
+        if (row.cells.length > table.header.length) {
+          const leadingCellCount = row.cells.length - table.header.length + 1
+          return {
+            kind: 'row' as const,
+            cells: [
+              row.cells.slice(0, leadingCellCount).filter(Boolean).join(' '),
+              ...row.cells.slice(leadingCellCount),
+            ],
+          }
+        }
+        if (row.cells.length === table.header.length) {
           return row
         }
         return {

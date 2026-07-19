@@ -1,0 +1,47 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 784 >>
+stream
+BT /F1 14 Tf 1 0 0 1 40 810 Tm (Swap facilities) Tj ET
+BT /F1 8 Tf 1 0 0 1 40 780 Tm (As at year end) Tj ET
+BT /F1 8 Tf 1 0 0 1 260 780 Tm (Currency) Tj ET
+BT /F1 8 Tf 1 0 0 1 380 780 Tm (Expiry) Tj ET
+BT /F1 8 Tf 1 0 0 1 500 780 Tm (Limit) Tj ET
+BT /F1 8 Tf 1 0 0 1 40 750 Tm (Standing) Tj ET
+BT /F1 8 Tf 1 0 0 1 78 750 Tm (facilities) Tj ET
+BT /F1 8 Tf 1 0 0 1 40 734 Tm (with partner banks) Tj ET
+BT /F1 8 Tf 1 0 0 1 40 714 Tm (Central Bank A) Tj ET
+BT /F1 8 Tf 1 0 0 1 260 714 Tm (Dollars) Tj ET
+BT /F1 8 Tf 1 0 0 1 380 714 Tm (No expiry) Tj ET
+BT /F1 8 Tf 1 0 0 1 500 714 Tm (Unlimited) Tj ET
+BT /F1 8 Tf 1 0 0 1 40 694 Tm (Central Bank B) Tj ET
+BT /F1 8 Tf 1 0 0 1 260 694 Tm (Euros) Tj ET
+BT /F1 8 Tf 1 0 0 1 380 694 Tm (Annual) Tj ET
+BT /F1 8 Tf 1 0 0 1 500 694 Tm (500) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000001076 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1146
+%%EOF

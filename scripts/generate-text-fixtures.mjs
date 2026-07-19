@@ -177,6 +177,116 @@ writeFileSync(
 )
 console.log('wrote test/fixtures/lowercase-table-caption.pdf')
 
+const detachedFinancialTableHeader = [
+  { text: 'Statement of position', x: 40, y: 810, size: 14 },
+  { text: 'Note', x: 280, y: 770, size: 8 },
+  { text: 'Current', x: 380, y: 770, size: 8 },
+  { text: 'Prior', x: 480, y: 770, size: 8 },
+  { text: 'Assets', x: 40, y: 750, size: 8 },
+  { text: 'Cash', x: 40, y: 730, size: 8 },
+  { text: '3', x: 280, y: 730, size: 8 },
+  { text: '120', x: 380, y: 730, size: 8 },
+  { text: '110', x: 480, y: 730, size: 8 },
+  { text: 'Investments', x: 40, y: 710, size: 8 },
+  { text: '4', x: 280, y: 710, size: 8 },
+  { text: '240', x: 380, y: 710, size: 8 },
+  { text: '220', x: 480, y: 710, size: 8 },
+]
+const stackedDetachedFinancialTableHeader = [
+  { text: 'Asset rollforward', x: 40, y: 810, size: 14 },
+  { text: 'Operating assets', x: 280, y: 780, size: 8 },
+  { text: 'Total assets', x: 480, y: 780, size: 8 },
+  { text: 'Cash', x: 280, y: 764, size: 8 },
+  { text: 'Securities', x: 380, y: 764, size: 8 },
+  { text: 'Total', x: 480, y: 764, size: 8 },
+  { text: 'Cost', x: 40, y: 740, size: 8 },
+  { text: 'Opening balance', x: 40, y: 720, size: 8 },
+  { text: '120', x: 280, y: 720, size: 8 },
+  { text: '240', x: 380, y: 720, size: 8 },
+  { text: '360', x: 480, y: 720, size: 8 },
+  { text: 'Closing balance', x: 40, y: 700, size: 8 },
+  { text: '130', x: 280, y: 700, size: 8 },
+  { text: '260', x: 380, y: 700, size: 8 },
+  { text: '390', x: 480, y: 700, size: 8 },
+]
+const firstFinancialRecordAfterHeader = [
+  { text: 'Swap facilities', x: 40, y: 810, size: 14 },
+  { text: 'As at year end', x: 40, y: 780, size: 8 },
+  { text: 'Currency', x: 260, y: 780, size: 8 },
+  { text: 'Expiry', x: 380, y: 780, size: 8 },
+  { text: 'Limit', x: 500, y: 780, size: 8 },
+  { text: 'Standing', x: 40, y: 750, size: 8 },
+  { text: 'facilities', x: 78, y: 750, size: 8 },
+  { text: 'with partner banks', x: 40, y: 734, size: 8 },
+  { text: 'Central Bank A', x: 40, y: 714, size: 8 },
+  { text: 'Dollars', x: 260, y: 714, size: 8 },
+  { text: 'No expiry', x: 380, y: 714, size: 8 },
+  { text: 'Unlimited', x: 500, y: 714, size: 8 },
+  { text: 'Central Bank B', x: 40, y: 694, size: 8 },
+  { text: 'Euros', x: 260, y: 694, size: 8 },
+  { text: 'Annual', x: 380, y: 694, size: 8 },
+  { text: '500', x: 500, y: 694, size: 8 },
+]
+const independentFinancialTable = [
+  { text: 'Valuation notes', x: 40, y: 810, size: 14 },
+  { text: 'Opening balance', x: 40, y: 780, size: 8 },
+  { text: '100', x: 380, y: 780, size: 8 },
+  { text: '90', x: 500, y: 780, size: 8 },
+  { text: 'Closing balance', x: 40, y: 760, size: 8 },
+  { text: '110', x: 380, y: 760, size: 8 },
+  { text: '95', x: 500, y: 760, size: 8 },
+  { text: 'Independent valuation schedule', x: 40, y: 730, size: 8 },
+  { text: 'Measured at year end', x: 40, y: 714, size: 8 },
+  { text: 'Cost', x: 280, y: 690, size: 8 },
+  { text: 'Fair value', x: 380, y: 690, size: 8 },
+  { text: 'Total', x: 500, y: 690, size: 8 },
+  { text: 'Government bonds', x: 40, y: 670, size: 8 },
+  { text: '120', x: 280, y: 670, size: 8 },
+  { text: '125', x: 380, y: 670, size: 8 },
+  { text: '245', x: 500, y: 670, size: 8 },
+  { text: 'Corporate bonds', x: 40, y: 650, size: 8 },
+  { text: '30', x: 280, y: 650, size: 8 },
+  { text: '35', x: 380, y: 650, size: 8 },
+  { text: '65', x: 500, y: 650, size: 8 },
+]
+const wrappedFinancialRowLabel = [
+  { text: 'Indemnity balance', x: 40, y: 810, size: 14 },
+  { text: 'Opening balance', x: 40, y: 780, size: 8 },
+  { text: '100', x: 380, y: 780, size: 8 },
+  { text: '90', x: 500, y: 780, size: 8 },
+  { text: 'Movement', x: 40, y: 760, size: 8 },
+  { text: '20', x: 380, y: 760, size: 8 },
+  { text: '15', x: 500, y: 760, size: 8 },
+  { text: 'Closing balance', x: 40, y: 730, size: 8 },
+  { text: 'as at', x: 102, y: 730, size: 8 },
+  { text: '31', x: 40, y: 710, size: 8 },
+  { text: 'December', x: 120, y: 710, size: 8 },
+  { text: '120', x: 380, y: 710, size: 8 },
+  { text: '105', x: 500, y: 710, size: 8 },
+]
+writeFileSync(
+  join(fixturesDir, 'detached-financial-table-header.pdf'),
+  pdfFromRuns(detachedFinancialTableHeader, {
+    additionalPages: [stackedDetachedFinancialTableHeader],
+  }),
+)
+console.log('wrote test/fixtures/detached-financial-table-header.pdf')
+writeFileSync(
+  join(fixturesDir, 'financial-record-after-header.pdf'),
+  pdfFromRuns(firstFinancialRecordAfterHeader),
+)
+console.log('wrote test/fixtures/financial-record-after-header.pdf')
+writeFileSync(
+  join(fixturesDir, 'independent-financial-table.pdf'),
+  pdfFromRuns(independentFinancialTable),
+)
+console.log('wrote test/fixtures/independent-financial-table.pdf')
+writeFileSync(
+  join(fixturesDir, 'wrapped-financial-row.pdf'),
+  pdfFromRuns(wrappedFinancialRowLabel),
+)
+console.log('wrote test/fixtures/wrapped-financial-row.pdf')
+
 const continuedFooter = [
   { text: 'Notes to Financial Statements', x: 57, y: 800, size: 12 },
   { text: 'Narrative content remains part of the note.', x: 57, y: 760, size: 9 },
