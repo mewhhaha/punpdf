@@ -1975,7 +1975,7 @@ function renderPageArticle(
 ): string {
   const blocks = repairJoinedTableCells(mergeTableSections(enrichTableHeaders(
     splitParallelTables(attachTrailingCellContinuations(parsePageBlocks(page))),
-  )), positionedText).filter((block) => {
+  ), positionedText), positionedText).filter((block) => {
     if (block.kind !== 'table' || block.header.some(Boolean) || block.body.length !== 1) {
       return true
     }
@@ -2344,7 +2344,10 @@ function parsePageBlocks(page: string): PageBlock[] {
   return blocks
 }
 
-function mergeTableSections(blocks: PageBlock[]): PageBlock[] {
+function mergeTableSections(
+  blocks: PageBlock[],
+  positionedText: StructuredTextItem[],
+): PageBlock[] {
   const merged: PageBlock[] = []
 
   for (let blockIndex = 0; blockIndex < blocks.length; blockIndex++) {
@@ -2385,42 +2388,15 @@ function mergeTableSections(blocks: PageBlock[]): PageBlock[] {
       const bridgedContinuation = blocks[continuationIndex]
       const bridgedContinuationHasRows = bridgedContinuation?.kind === 'table'
         && bridgedContinuation.body.some(row => row.kind === 'row')
-      if (
-        bridgedLabels.length > 1
+      const bridgesMultipleLabels = bridgedLabels.length > 1
         && bridgedContinuation?.kind === 'table'
         && bridgedContinuationHasRows
-        && !(table.header.every(cell => cell.length === 0)
-          && bridgedContinuation.header.some(cell => cell.length > 0))
-        && headersMatch(table.header, bridgedContinuation.header)
-      ) {
-        const alignedRows = bridgedContinuation.body.map((row) => {
-          if (row.kind !== 'row' || row.cells.length >= table.header.length) {
-            return row
-          }
-          return {
-            kind: 'row' as const,
-            cells: [
-              ...Array.from<string>({ length: table.header.length - row.cells.length }).fill(''),
-              ...row.cells,
-            ],
-          }
-        })
-        table.body.push(
-          ...bridgedLabels.map(labelText => ({
-            kind: 'row' as const,
-            cells: [
-              labelText,
-              ...Array.from<string>({ length: table.header.length - 1 }).fill(''),
-            ],
-          })),
-          ...alignedRows,
-        )
-        followingIndex = continuationIndex + 1
-        continue
-      }
       const label = blocks[followingIndex]!
-      const continuation = blocks[followingIndex + 1]!
-      const compactSectionHeading = label.kind === 'heading'
+      const continuation = bridgesMultipleLabels
+        ? bridgedContinuation!
+        : blocks[followingIndex + 1]!
+      const compactSectionHeading = !bridgesMultipleLabels
+        && label.kind === 'heading'
         && label.level >= 2
         && label.text.length <= 20
         && /^[a-z0-9]+(?:[-.][a-z0-9]+)*:?$/i.test(label.text)
@@ -2447,61 +2423,89 @@ function mergeTableSections(blocks: PageBlock[]): PageBlock[] {
         followingIndex += 2
         continue
       }
-      const sparseRowLabels = label.kind === 'paragraph'
-        && label.lines.length > 1
-        && label.lines.every(line =>
-          line.length <= 80
-          && !/[.!?]$|https?:\/\/|\S+@\S+/.test(line))
-        ? label.lines
-        : undefined
-      const sectionLabel = label.kind === 'heading' && label.level === 3
-        ? label.text
-        : label.kind === 'paragraph' && label.lines.length === 1
-          ? label.lines[0]
+      const sparseRowLabels = bridgesMultipleLabels
+        ? bridgedLabels
+        : label.kind === 'paragraph'
+          && label.lines.length > 1
+          && label.lines.every(line =>
+            line.length <= 80
+            && !/[.!?]$|https?:\/\/|\S+@\S+/.test(line))
+          ? label.lines
           : undefined
+      const sectionLabel = bridgesMultipleLabels
+        ? undefined
+        : label.kind === 'heading' && label.level === 3
+          ? label.text
+          : label.kind === 'paragraph' && label.lines.length === 1
+            ? label.lines[0]
+            : undefined
+      const tableHasHeader = table.header.some(cell => cell.length > 0)
+      const continuationHasHeader = continuation.kind === 'table'
+        && continuation.header.some(cell => cell.length > 0)
       if (
         (!sectionLabel && !sparseRowLabels)
         || (sectionLabel?.length ?? 0) > 80
         || continuation.kind !== 'table'
         || continuationRows.length === 0
-        || (table.header.every(cell => cell.length === 0)
-          && continuation.header.some(cell => cell.length > 0)
+        || (bridgesMultipleLabels && !tableHasHeader && continuationHasHeader)
+        || (!bridgesMultipleLabels
+          && !tableHasHeader
+          && continuationHasHeader
           && table.header.length !== continuation.header.length)
-        || !headersMatch(table.header, continuation.header)
+        || !tableSchemasAreCompatible(table.header, continuation.header)
       ) {
         break
       }
-      const promotedDetachedHeader = table.body.length === 0
-        && table.header.some(cell => cell.length > 0)
-        && continuation.header.every(cell => cell.length === 0)
+      let mergedHeader = table.header
+      let mergedBody = table.body
+      const needsLeadingHeaderColumn = table.body.length === 0
+        && tableHasHeader
+        && !continuationHasHeader
         && continuation.header.length === table.header.length + 1
-      if (promotedDetachedHeader) {
-        table.header = ['', ...table.header]
+      if (needsLeadingHeaderColumn) {
+        const alignedDetachedHeader = alignHeaderToContinuation(
+          table.header,
+          continuation,
+          positionedText,
+        )
+        if (!alignedDetachedHeader || alignedDetachedHeader[0]) {
+          break
+        }
+        mergedHeader = alignedDetachedHeader
       }
       const detachedHeaderRows = table.body.flatMap(row => row.kind === 'row' ? [row.cells] : [])
-      const detachedHeaderOffset = continuation.header.length - table.header.length
-      const detachedHeader = table.header.every(cell => cell.length === 0)
+      const detachedRowsAreHeaderLike = !tableHasHeader
         && detachedHeaderRows.length === table.body.length
         && detachedHeaderRows.length >= 1
         && detachedHeaderRows.length <= 4
-        && detachedHeaderOffset >= 0
-        && detachedHeaderOffset <= 1
         && detachedHeaderRows.every(row =>
           row.filter(Boolean).length >= 2
           && row.every(cell =>
             parseFinancialValue(cell) === undefined
             || /^(?:19|20)\d{2}$/.test(cell)))
+      const alignedDetachedHeader = detachedRowsAreHeaderLike
+        ? alignHeaderToContinuation(
+            combineHeaderRows(
+              detachedHeaderRows,
+              Math.max(...detachedHeaderRows.map(row => row.length)),
+            ),
+            continuation,
+            positionedText,
+          )
+        : undefined
+      const detachedHeader = alignedDetachedHeader !== undefined
+        && (!alignedDetachedHeader[0]
+          || (detachedHeaderRows.length === 1 && continuationHasHeader))
+        && (continuationHasHeader
+          || continuationRows.some(row =>
+            row.cells.filter(cell => parseFinancialValue(cell) !== undefined).length >= 2))
       let rowsToAlign = continuation.body
       if (detachedHeader) {
-        const alignedHeaderRows = detachedHeaderRows.map(row => [
-          ...Array.from<string>({ length: detachedHeaderOffset }).fill(''),
-          ...row,
-        ])
-        table.header = combineHeaderRows(alignedHeaderRows, continuation.header.length)
-        table.body = []
+        mergedHeader = alignedDetachedHeader
+        mergedBody = []
         if (
-          continuation.header.some(cell => cell.length > 0)
-          && !headersMatch(table.header, continuation.header)
+          continuationHasHeader
+          && !headersAreEqual(mergedHeader, continuation.header)
         ) {
           rowsToAlign = [
             { kind: 'row', cells: continuation.header },
@@ -2509,31 +2513,49 @@ function mergeTableSections(blocks: PageBlock[]): PageBlock[] {
           ]
         }
       }
+      let hasUnsafeOverwideRow = false
       const alignedRows = rowsToAlign.map((row) => {
         if (row.kind !== 'row') {
           return row
         }
-        if (row.cells.length > table.header.length) {
-          const leadingCellCount = row.cells.length - table.header.length + 1
+        if (row.cells.length > mergedHeader.length) {
+          const leadingCellCount = row.cells.length - mergedHeader.length + 1
+          const leadingCells = row.cells.slice(0, leadingCellCount).filter(Boolean)
+          const trailingCells = row.cells.slice(leadingCellCount).filter(Boolean)
+          const joinedLeadingCells = leadingCells.join(' ')
+          const leadingCellsAreText = leadingCells.every(cell =>
+            parseFinancialValue(cell) === undefined)
+          const leadingCellsAreDate = /^\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)$/i.test(joinedLeadingCells)
+          const trailingCellsAreFinancial = trailingCells.length > 0
+            && trailingCells.every(cell => parseFinancialValue(cell) !== undefined)
+          if ((!leadingCellsAreText && !leadingCellsAreDate) || !trailingCellsAreFinancial) {
+            hasUnsafeOverwideRow = true
+            return row
+          }
           return {
             kind: 'row' as const,
             cells: [
-              row.cells.slice(0, leadingCellCount).filter(Boolean).join(' '),
+              joinedLeadingCells,
               ...row.cells.slice(leadingCellCount),
             ],
           }
         }
-        if (row.cells.length === table.header.length) {
+        if (row.cells.length === mergedHeader.length) {
           return row
         }
         return {
           kind: 'row' as const,
           cells: [
-            ...Array.from<string>({ length: table.header.length - row.cells.length }).fill(''),
+            ...Array.from<string>({ length: mergedHeader.length - row.cells.length }).fill(''),
             ...row.cells,
           ],
         }
       })
+      if (hasUnsafeOverwideRow) {
+        break
+      }
+      table.header = mergedHeader
+      table.body = mergedBody
       if (sparseRowLabels) {
         table.body.push(
           ...sparseRowLabels.map(labelText => ({
@@ -2545,7 +2567,7 @@ function mergeTableSections(blocks: PageBlock[]): PageBlock[] {
           })),
           ...alignedRows,
         )
-        followingIndex += 2
+        followingIndex = bridgesMultipleLabels ? continuationIndex + 1 : followingIndex + 2
         continue
       }
       if (!sectionLabel) {
@@ -2909,7 +2931,12 @@ function enrichTableHeaders(blocks: PageBlock[]): PageBlock[] {
   return enriched
 }
 
-function headersMatch(left: string[], right: string[]): boolean {
+function headersAreEqual(left: string[], right: string[]): boolean {
+  return left.length === right.length
+    && left.every((cell, index) => cell === right[index])
+}
+
+function tableSchemasAreCompatible(left: string[], right: string[]): boolean {
   if (Math.abs(left.length - right.length) > 1) {
     return false
   }
@@ -2917,7 +2944,118 @@ function headersMatch(left: string[], right: string[]): boolean {
   const populatedRight = right.some(cell => cell.length > 0)
   return !populatedLeft
     || !populatedRight
-    || (left.length === right.length && left.every((cell, index) => cell === right[index]))
+    || headersAreEqual(left, right)
+}
+
+function alignHeaderToContinuation(
+  header: string[],
+  continuation: TableBlock,
+  positionedText: StructuredTextItem[],
+): string[] | undefined {
+  const continuationRows = [
+    continuation.header,
+    ...continuation.body.flatMap(row => row.kind === 'row' ? [row.cells] : []),
+  ]
+  const locatedContinuationCells = locateTableCells(continuationRows, positionedText)
+  const continuationColumnAnchors = Array.from({ length: continuation.header.length }, (_, columnIndex) => {
+    const positions = locatedContinuationCells
+      .filter(cell => cell.cellIndex === columnIndex)
+      .map(cell => cell.x)
+      .sort((left, right) => left - right)
+    return positions[Math.floor(positions.length / 2)]
+  })
+  const topContinuationBaseline = Math.max(...locatedContinuationCells.map(cell => cell.y))
+  if (!Number.isFinite(topContinuationBaseline)) {
+    return undefined
+  }
+
+  const claimedTextRuns = new Set<StructuredTextItem>()
+  const locatedHeaderSegments: Array<{
+    fontSize: number
+    label: string
+    x: number
+    y: number
+  }> = []
+  const headerSegments = header.flatMap(cell => cell.split('<br>').filter(Boolean))
+  for (const label of headerSegments) {
+    const sourceLabel = label.replaceAll('**', '').replace(/\\([\\|#])/g, '$1')
+    const textRun = positionedText
+      .filter(candidate =>
+        candidate.str === sourceLabel
+        && !claimedTextRuns.has(candidate)
+        && candidate.y > topContinuationBaseline
+        && candidate.y - topContinuationBaseline <= Math.max(1, candidate.fontSize) * 12)
+      .sort((left, right) =>
+        left.y - right.y
+        || left.x - right.x)[0]
+    if (!textRun) {
+      return undefined
+    }
+    claimedTextRuns.add(textRun)
+    locatedHeaderSegments.push({
+      fontSize: textRun.fontSize,
+      label,
+      x: textRun.x,
+      y: textRun.y,
+    })
+  }
+
+  const headerBaselines: Array<typeof locatedHeaderSegments> = []
+  for (const segment of [...locatedHeaderSegments].sort((left, right) => right.y - left.y)) {
+    const baseline = headerBaselines.find(candidate =>
+      Math.abs(candidate[0]!.y - segment.y)
+      <= Math.max(candidate[0]!.fontSize, segment.fontSize) * 0.35)
+    if (baseline) {
+      baseline.push(segment)
+    }
+    else {
+      headerBaselines.push([segment])
+    }
+  }
+  const anchorBaseline = headerBaselines.sort((left, right) =>
+    right.length - left.length
+    || left[0]!.y - right[0]!.y)[0]
+  if (!anchorBaseline) {
+    return undefined
+  }
+  const sortedAnchors = anchorBaseline
+    .map(segment => segment.x)
+    .sort((left, right) => left - right)
+  const missingLeadingColumn = sortedAnchors.length === continuation.header.length - 1
+  if (sortedAnchors.length !== continuation.header.length && !missingLeadingColumn) {
+    return undefined
+  }
+  if (missingLeadingColumn) {
+    const firstContinuationColumn = continuationColumnAnchors[0]
+    const secondContinuationColumn = continuationColumnAnchors[1]
+    if (
+      firstContinuationColumn === undefined
+      || secondContinuationColumn === undefined
+      || Math.abs(sortedAnchors[0]! - secondContinuationColumn)
+      >= Math.abs(sortedAnchors[0]! - firstContinuationColumn)
+    ) {
+      return undefined
+    }
+  }
+
+  const firstHeaderColumn = missingLeadingColumn ? 1 : 0
+  const alignedSegments: Array<Array<{ label: string, x: number, y: number }>>
+    = continuation.header.map(() => [])
+  for (const segment of locatedHeaderSegments) {
+    const targetColumn = sortedAnchors
+      .map((anchor, columnOffset) => ({
+        columnIndex: firstHeaderColumn + columnOffset,
+        distance: Math.abs(anchor - segment.x),
+      }))
+      .sort((left, right) => left.distance - right.distance)[0]!
+      .columnIndex
+    alignedSegments[targetColumn]!.push(segment)
+  }
+  return alignedSegments.map(segments => segments
+    .sort((left, right) => right.y - left.y || left.x - right.x)
+    .map(segment => segment.label)
+    .filter((label, labelIndex, labels) => labels.indexOf(label) === labelIndex)
+    .join('<br>'))
 }
 
 function normalizeTable(table: TableBlock): TableBlock {
@@ -3063,9 +3201,19 @@ function promoteLeadingHeaderRows(table: TableBlock): TableBlock {
     const numeric = populated.filter(isStructuredNumericCell)
     return populated.length >= 3 && numeric.length >= Math.ceil(populated.length / 3)
   })
+  const populatedCellCounts = rows.map(row => row.filter(Boolean).length)
+  const expandsTowardBody = populatedCellCounts.length >= 2
+    && populatedCellCounts.every((cellCount, rowIndex) =>
+      rowIndex === 0 || cellCount >= populatedCellCounts[rowIndex - 1]!)
+    && populatedCellCounts.at(-1)! > populatedCellCounts[0]!
+  const repeatsHeaderLabels = rows.some((row) => {
+    const labels = row.filter(Boolean)
+    return new Set(labels).size < labels.length
+  })
   const headerRowCount = firstRecordRow === -1
     && rows.length >= 2
     && rows.length <= 4
+    && (expandsTowardBody || repeatsHeaderLabels)
     && rows.every(row => row.filter(Boolean).length >= 2 && row.every(cell => !isStructuredNumericCell(cell)))
     ? rows.length
     : firstRecordRow

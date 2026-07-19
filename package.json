@@ -1,7 +1,7 @@
 {
   "name": "@mewhhaha/punpdf",
   "type": "module",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "packageManager": "pnpm@10.33.0",
   "description": "Accuracy-focused PDF extraction and rendering built from unpdf",
   "author": "Johann Schopplich <hello@johannschopplich.com>",
@@ -69,6 +69,7 @@
     "publish:jsr:dry-run": "pnpm run build:pdfjs && pnpm run build && pnpm dlx jsr publish --dry-run --allow-dirty",
     "release": "bumpp",
     "test": "vitest",
+    "test:fixtures": "node scripts/check-text-fixtures.mjs",
     "test:types": "tsc --noEmit"
   },
   "peerDependencies": {

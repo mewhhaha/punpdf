@@ -64,6 +64,12 @@ describe('punpdf', () => {
     expect(totalPages).toMatchInlineSnapshot('1')
   })
 
+  it('extracts escaped PDF literal characters', async () => {
+    const { text } = await extractText(await getPDF('escaped-pdf-literals.pdf'))
+
+    expect(text[0]).toBe('Fixture literals\nForecast (draft)\nArchive \\ Reports')
+  })
+
   it('extracts text in visual reading order', async () => {
     const { text } = await extractText(await getPDF('links.pdf'), {
       readingOrder: 'visual',
@@ -297,7 +303,7 @@ describe('punpdf', () => {
   it('keeps every column beneath a stacked financial table header', async () => {
     const { html } = await extractHTML(await getPDF('detached-financial-table-header.pdf'))
 
-    expect(html[1]).toContain('<th scope="col"></th>')
+    expect(html[1]).toContain('<tr><th scope="col"></th><th scope="col">Operating assets<br>Cash</th><th scope="col">Securities</th><th scope="col">Total assets<br>Total</th></tr>')
     expect(html[1]).toContain('<tr><th scope="row">Opening balance</th><td>120</td><td>240</td><td>360</td></tr>')
     expect(html[1]).toContain('<tr><th scope="row">Closing balance</th><td>130</td><td>260</td><td>390</td></tr>')
   })

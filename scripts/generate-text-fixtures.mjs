@@ -1,13 +1,15 @@
 // Regenerates the hand-rolled text-layout fixtures in test/fixtures.
 // Run with: node scripts/generate-text-fixtures.mjs
-import { writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { Buffer } from 'node:buffer'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
+import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 
-const fixturesDir = join(dirname(fileURLToPath(import.meta.url)), '../test/fixtures')
+const defaultFixturesDir = join(dirname(fileURLToPath(import.meta.url)), '../test/fixtures')
+const fixturesDir = process.argv[2] ? resolve(process.argv[2]) : defaultFixturesDir
+mkdirSync(fixturesDir, { recursive: true })
 
-// Text must stay free of the characters ( ) \ that would need escaping in
-// PDF string literals.
 function pdfFromRuns(runs, {
   additionalPages = [],
   fontEncoding,
@@ -25,14 +27,23 @@ function pdfFromRuns(runs, {
   for (const [pageIndex, pageRuns] of pages.entries()) {
     const content = pageRuns
       .map(({ text, pdfLiteral, x, y, size, tm }) => {
+        if (pdfLiteral === undefined && /[^\x20-\x7E]/.test(text)) {
+          throw new Error(`PDF fixture text "${text}" requires an encoded pdfLiteral`)
+        }
         const matrix = tm ?? [1, 0, 0, 1, x, y]
-        return `BT /F1 ${size} Tf ${matrix.join(' ')} Tm (${pdfLiteral ?? text}) Tj ET`
+        const encodedText = pdfLiteral ?? text
+          .replaceAll('\\', '\\\\')
+          .replaceAll('(', '\\(')
+          .replaceAll(')', '\\)')
+          .replaceAll('\r', '\\r')
+          .replaceAll('\n', '\\n')
+        return `BT /F1 ${size} Tf ${matrix.join(' ')} Tm (${encodedText}) Tj ET`
       })
       .join('\n')
     const contentReference = pageReferences[pageIndex] + 1
     objects.push(
       `<< /Type /Page /Parent 2 0 R /MediaBox [${mediaBox.join(' ')}]${rotation} /Resources << /Font << /F1 ${fontReference} 0 R >> >> /Contents ${contentReference} 0 R >>`,
-      `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
+      `<< /Length ${Buffer.byteLength(content)} >>\nstream\n${content}\nendstream`,
     )
   }
   const encoding = fontEncoding ? ` /Encoding /${fontEncoding}` : ''
@@ -41,16 +52,16 @@ function pdfFromRuns(runs, {
   let pdf = '%PDF-1.4\n'
   const offsets = []
   for (const [index, object] of objects.entries()) {
-    offsets.push(pdf.length)
+    offsets.push(Buffer.byteLength(pdf))
     pdf += `${index + 1} 0 obj\n${object}\nendobj\n`
   }
-  const xrefOffset = pdf.length
+  const xrefOffset = Buffer.byteLength(pdf)
   pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`
   for (const offset of offsets) {
     pdf += `${String(offset).padStart(10, '0')} 00000 n \n`
   }
   pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`
-  return pdf
+  return Buffer.from(pdf)
 }
 
 const leftColumnLines = [
@@ -94,10 +105,17 @@ const superscript = [
   { text: 'O', x: 70.3, y: 670, size: 12 },
 ]
 
+const escapedPdfLiterals = [
+  { text: 'Fixture literals', x: 57, y: 780, size: 14 },
+  { text: 'Forecast (draft)', x: 57, y: 740, size: 10 },
+  { text: 'Archive \\ Reports', x: 57, y: 720, size: 10 },
+]
+
 for (const [filename, runs] of [
   ['two-column.pdf', twoColumn],
   ['table.pdf', table],
   ['superscript.pdf', superscript],
+  ['escaped-pdf-literals.pdf', escapedPdfLiterals],
 ]) {
   writeFileSync(join(fixturesDir, filename), pdfFromRuns(runs))
   console.log(`wrote test/fixtures/${filename}`)

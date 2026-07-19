@@ -624,6 +624,84 @@ describe('html extraction properties', () => {
     expect(html[0]).toContain('<tr class="section"><th colspan="8" scope="rowgroup">1-1</th></tr>')
   })
 
+  it('keeps an extra numeric column in an independent section', async () => {
+    const { html } = await extractHTML(authorPdf([
+      { text: 'Measures', x: 40, y: 810, size: 14 },
+      ...tableRuns([
+        ['Category', 'Current', 'Prior'],
+        ['Opening', '100', '90'],
+      ], { size: 8, starts: [40, 380, 500], top: 780 }),
+      { text: 'Breakdown', x: 40, y: 730, size: 8 },
+      ...tableRuns([
+        ['1', '2', '3', '4'],
+        ['5', '6', '7', '8'],
+      ], { size: 8, starts: [40, 220, 380, 500], top: 700 }),
+    ]))
+    const renderedRows = htmlRows(html[0]!).map(htmlCells)
+
+    expect(html[0]!.match(/<table>/g)).toHaveLength(2)
+    expect(renderedRows).toContainEqual(['1', '2', '3', '4'])
+    expect(renderedRows).toContainEqual(['5', '6', '7', '8'])
+  })
+
+  it('does not use a narrower independent header for a wider table', async () => {
+    const { html } = await extractHTML(authorPdf([
+      { text: 'Schedules', x: 40, y: 810, size: 14 },
+      ...tableRuns([
+        ['Category', 'Current', 'Prior'],
+      ], { size: 8, starts: [40, 380, 500], top: 780 }),
+      { text: 'Independent schedule', x: 40, y: 750, size: 8 },
+      ...tableRuns([
+        ['Bond A', 'Cost', '120', '125'],
+        ['Bond B', 'Value', '30', '35'],
+      ], { size: 8, starts: [40, 220, 380, 500], top: 720 }),
+    ]))
+    const renderedRows = htmlRows(html[0]!).map(htmlCells)
+
+    expect(html[0]!.match(/<table>/g)).toHaveLength(2)
+    expect(renderedRows).toContainEqual(['Category', 'Current', 'Prior'])
+    expect(renderedRows).toContainEqual(['Bond A', 'Cost', '120', '125'])
+  })
+
+  it('keeps headerless text records in the table body', async () => {
+    const { html } = await extractHTML(authorPdf([
+      { text: 'Facilities', x: 40, y: 810, size: 14 },
+      ...tableRuns([
+        ['Central Bank A', 'Dollars', 'No expiry', 'Unlimited'],
+        ['Central Bank B', 'Euros', 'Annual', 'Committed'],
+      ], { size: 8, starts: [40, 220, 380, 500], top: 780 }),
+      { text: 'Balances', x: 40, y: 730, size: 8 },
+      ...tableRuns([
+        ['Opening', '10', '20', '30'],
+        ['Closing', '15', '25', '35'],
+      ], { size: 8, starts: [40, 220, 380, 500], top: 700 }),
+    ]))
+    const renderedRows = htmlRows(html[0]!).map(htmlCells)
+
+    expect(renderedRows).toContainEqual(['Central Bank A', 'Dollars', 'No expiry', 'Unlimited'])
+    expect(renderedRows).toContainEqual(['Central Bank B', 'Euros', 'Annual', 'Committed'])
+    expect(html[0]).not.toContain('<th scope="col">Central Bank A<br>Central Bank B</th>')
+  })
+
+  it('aligns wrapped records after multiple section labels', async () => {
+    const { html } = await extractHTML(authorPdf([
+      { text: 'Balances', x: 40, y: 810, size: 14 },
+      ...tableRuns([
+        ['Category', 'Current', 'Prior'],
+        ['Opening', '100', '90'],
+      ], { size: 8, starts: [40, 380, 500], top: 780 }),
+      { text: 'Closing balance as at', x: 40, y: 730, size: 8 },
+      { text: 'year end', x: 40, y: 714, size: 8 },
+      ...tableRuns([
+        ['31', 'December', '120', '105'],
+      ], { size: 8, starts: [40, 120, 380, 500], top: 690 }),
+    ]))
+    const renderedRows = htmlRows(html[0]!).map(htmlCells)
+
+    expect(html[0]!.match(/<table>/g)).toHaveLength(1)
+    expect(renderedRows).toContainEqual(['31 December', '120', '105'])
+  })
+
   it('keeps repeated wrapped labels attached to their individual columns', async () => {
     const rows = [
       ['Floorplan', 'Average', 'Average', 'Average'],
