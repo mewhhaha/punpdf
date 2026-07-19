@@ -663,6 +663,29 @@ describe('html extraction properties', () => {
     expect(renderedRows).toContainEqual(['Bond A', 'Cost', '120', '125'])
   })
 
+  it('keeps a same-width headed schedule independent from a headerless table', async () => {
+    const { html } = await extractHTML(authorPdf([
+      { text: 'Schedules', x: 40, y: 810, size: 14 },
+      ...tableRuns([
+        ['OVERVIEW', '(EUR million)*', 'FINANCING ACTIVITY'],
+      ], { size: 6, starts: [40, 180, 320], top: 780 }),
+      { text: '31/12/2025 31/12/2024', x: 300, y: 740, size: 6 },
+      ...tableRuns([
+        ['Loans disbursed', 'Current', 'Prior'],
+        ['100000', '11', '623'],
+      ], { size: 6, starts: [40, 260, 430], top: 700 }),
+    ]))
+    const renderedRows = htmlRows(html[0]!).map(htmlCells)
+
+    expect(html[0]!.match(/<table>/g)).toHaveLength(2)
+    expect(renderedRows).toContainEqual([
+      'Loans disbursed',
+      'Current',
+      'Prior',
+    ])
+    expect(renderedRows).toContainEqual(['100000', '11', '623'])
+  })
+
   it('keeps headerless text records in the table body', async () => {
     const { html } = await extractHTML(authorPdf([
       { text: 'Facilities', x: 40, y: 810, size: 14 },
@@ -681,6 +704,62 @@ describe('html extraction properties', () => {
     expect(renderedRows).toContainEqual(['Central Bank A', 'Dollars', 'No expiry', 'Unlimited'])
     expect(renderedRows).toContainEqual(['Central Bank B', 'Euros', 'Annual', 'Committed'])
     expect(html[0]).not.toContain('<th scope="col">Central Bank A<br>Central Bank B</th>')
+  })
+
+  it('keeps sparse headerless text records in the table body', async () => {
+    const { html } = await extractHTML(authorPdf([
+      { text: 'Facilities', x: 40, y: 810, size: 14 },
+      ...tableRuns([
+        ['Central Bank A', 'Dollars', ''],
+        ['Central Bank B', 'Euros', 'Committed'],
+      ], { size: 8, starts: [40, 280, 440], top: 780 }),
+    ]))
+    const renderedRows = htmlRows(html[0]!).map(htmlCells)
+
+    expect(renderedRows).toContainEqual(['Central Bank A', 'Dollars', ''])
+    expect(renderedRows).toContainEqual(['Central Bank B', 'Euros', 'Committed'])
+    expect(html[0]).not.toContain('<thead>')
+  })
+
+  it('keeps a long text roster before a numeric footer in the table body', async () => {
+    const roster = [
+      ['Belgium', 'Minister One', 'Minister of Finance'],
+      ['Bulgaria', 'Minister Two', 'Minister of Finance'],
+      ['Croatia', 'Minister Three', 'Minister of Finance'],
+      ['Estonia', 'Minister Four', 'Minister for Finance'],
+      ['Ireland', 'Minister Five', 'Minister for Finance'],
+      ['Latvia', 'Minister Six', 'Minister for Finance'],
+      ['36', '2025 FINANCIAL REPORT', ''],
+    ]
+    const { html } = await extractHTML(authorPdf([
+      { text: 'Board of Governors', x: 40, y: 820, size: 14 },
+      ...tableRuns(roster, { size: 7, starts: [40, 220, 390], top: 790 }),
+    ]))
+    const renderedRows = htmlRows(html[0]!).map(htmlCells)
+
+    expect(renderedRows).toContainEqual(['Belgium', 'Minister One', 'Minister of Finance'])
+    expect(renderedRows).toContainEqual(['Latvia', 'Minister Six', 'Minister for Finance'])
+    expect(html[0]).not.toContain('<th scope="col">Belgium<br>Bulgaria')
+    expect(html[0]).toContain('36 2025 FINANCIAL REPORT')
+  })
+
+  it('keeps report-labelled records inside the table body', async () => {
+    const { html } = await extractHTML(authorPdf([
+      { text: 'Publications', x: 40, y: 820, size: 14 },
+      ...tableRuns([
+        ['Research paper A', 'Economics', 'Published'],
+        ['Research paper B', 'Monetary policy', 'Published'],
+        ['Research paper C', 'Statistics', 'Published'],
+        ['Research paper D', 'Markets', 'Published'],
+        ['Research paper E', 'Financial stability', 'Published'],
+        ['36', '2025 FINANCIAL REPORT', 'Published'],
+        ['Monthly bulletin', 'Statistics', 'Published'],
+      ], { size: 7, starts: [40, 220, 390], top: 150 }),
+    ]))
+    const renderedRows = htmlRows(html[0]!).map(htmlCells)
+
+    expect(renderedRows).toContainEqual(['36', '2025 FINANCIAL REPORT', 'Published'])
+    expect(renderedRows).toContainEqual(['Monthly bulletin', 'Statistics', 'Published'])
   })
 
   it('aligns wrapped records after multiple section labels', async () => {

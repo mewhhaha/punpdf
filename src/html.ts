@@ -1571,6 +1571,26 @@ export async function extractHTML(
         continue
       }
 
+      const trailingPageFooters: string[] = []
+      while (rows.length > 0) {
+        const populatedCells = rows.at(-1)!.filter(Boolean)
+        const reportPageFooter = populatedCells.length <= 3
+          && populatedCells.some(cell => /^\d{1,4}$/.test(cell))
+          && populatedCells.some(cell => /\b(?:annual|financial) report\b/i.test(cell))
+        if (!reportPageFooter || !populatedCells.every(isPageFooterText)) {
+          break
+        }
+        trailingPageFooters.unshift(populatedCells.join(' '))
+        rows.pop()
+      }
+      if (rows.length === 0) {
+        if (structuredLines.at(-1) !== '') {
+          structuredLines.push('')
+        }
+        structuredLines.push(...trailingPageFooters)
+        continue
+      }
+
       const sourceColumnCount = Math.max(...rows.map(row => row.length))
       const populatedColumnIndexes = Array.from(
         { length: sourceColumnCount },
@@ -1766,6 +1786,12 @@ export async function extractHTML(
           structuredLines.push('')
         }
         structuredLines.push(...trailingTableFurniture)
+      }
+      if (trailingPageFooters.length > 0) {
+        if (structuredLines.at(-1) !== '') {
+          structuredLines.push('')
+        }
+        structuredLines.push(...trailingPageFooters)
       }
       if (lineIndex < lines.length && lines[lineIndex] !== '') {
         structuredLines.push('')
@@ -2499,6 +2525,9 @@ function mergeTableSections(
         && (continuationHasHeader
           || continuationRows.some(row =>
             row.cells.filter(cell => parseFinancialValue(cell) !== undefined).length >= 2))
+      if (!tableHasHeader && continuationHasHeader && !detachedHeader) {
+        break
+      }
       let rowsToAlign = continuation.body
       if (detachedHeader) {
         mergedHeader = alignedDetachedHeader
@@ -3201,19 +3230,14 @@ function promoteLeadingHeaderRows(table: TableBlock): TableBlock {
     const numeric = populated.filter(isStructuredNumericCell)
     return populated.length >= 3 && numeric.length >= Math.ceil(populated.length / 3)
   })
-  const populatedCellCounts = rows.map(row => row.filter(Boolean).length)
-  const expandsTowardBody = populatedCellCounts.length >= 2
-    && populatedCellCounts.every((cellCount, rowIndex) =>
-      rowIndex === 0 || cellCount >= populatedCellCounts[rowIndex - 1]!)
-    && populatedCellCounts.at(-1)! > populatedCellCounts[0]!
-  const repeatsHeaderLabels = rows.some((row) => {
+  const hasColumnGroupLabel = rows.some((row) => {
     const labels = row.filter(Boolean)
     return new Set(labels).size < labels.length
   })
   const headerRowCount = firstRecordRow === -1
     && rows.length >= 2
     && rows.length <= 4
-    && (expandsTowardBody || repeatsHeaderLabels)
+    && hasColumnGroupLabel
     && rows.every(row => row.filter(Boolean).length >= 2 && row.every(cell => !isStructuredNumericCell(cell)))
     ? rows.length
     : firstRecordRow
