@@ -1174,11 +1174,18 @@ export async function extractHTML(
           .length >= 2
         const headerContainsUnrepresentedColumns
           = populatedSourceColumns.length < headerColumns.length
+        const leadingRowFinancialTokenCount = leadingRow
+          .flatMap(cell => cell.split(/\s+/).filter(Boolean))
+          .filter(isNumericCell)
+          .length
+        const leadingRowLooksLikeFinancialRecord = leadingRow.some(cell => /[a-z]/i.test(cell))
+          && leadingRowFinancialTokenCount >= 3
         const canRebuildColumns = (
           separatedLabels.length > 0
           || headerContainsUnrepresentedColumns
         )
         && leadingRowIntroducesRecords
+        && !leadingRowLooksLikeFinancialRecord
         && headerColumns.length >= 2
         && populatedSourceColumns.every(columnIndex =>
           sourceColumnTargets[columnIndex] !== undefined)

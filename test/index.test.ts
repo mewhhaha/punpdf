@@ -324,6 +324,17 @@ describe('punpdf', () => {
     expect(html[0]).toContain('<tr><th scope="row">Government bonds</th><td>120</td><td>125</td><td>245</td></tr>')
   })
 
+  it('keeps the first record in a headerless financial table section', async () => {
+    const { html } = await extractHTML(await getPDF('headerless-financial-section.pdf'))
+
+    expect(html[0]).toContain('North America Commercial')
+    expect(html[0]).toContain('8,172')
+    expect(html[0]).toContain('5,713')
+    expect(html[0]).toContain('824')
+    expect(html[0]).toContain('1,087')
+    expect(html[0]).toContain('8,452')
+  })
+
   it('joins a wrapped financial row label without dropping its trailing value', async () => {
     const { html } = await extractHTML(await getPDF('wrapped-financial-row.pdf'))
 

@@ -267,6 +267,37 @@ const independentFinancialTable = [
   { text: '35', x: 380, y: 650, size: 8 },
   { text: '65', x: 500, y: 650, size: 8 },
 ]
+const headerlessFinancialSection = [
+  { text: 'Supplementary schedule', x: 40, y: 810, size: 14 },
+  { text: 'North', x: 60.8, y: 720, size: 8 },
+  { text: 'America Commercial', x: 82.2, y: 720, size: 8 },
+  { text: '$', x: 184.3, y: 720, size: 8 },
+  { text: '8,172', x: 224.6, y: 720, size: 8 },
+  { text: '$', x: 252.5, y: 720, size: 8 },
+  { text: '(b)', x: 296, y: 723, size: 6 },
+  { text: '$', x: 320.8, y: 720, size: 8 },
+  { text: '5,713', x: 355.8, y: 720, size: 8 },
+  { text: '$', x: 383.8, y: 720, size: 8 },
+  { text: '824', x: 431.5, y: 720, size: 8 },
+  { text: '$', x: 452.8, y: 720, size: 8 },
+  { text: '1,087', x: 493.1, y: 720, size: 8 },
+  { text: '$', x: 521, y: 720, size: 8 },
+  { text: '8,452', x: 561.3, y: 720, size: 8 },
+  { text: 'International Commercial', x: 60.8, y: 700, size: 8 },
+  { text: '8,145', x: 224.6, y: 700, size: 8 },
+  { text: '(b)', x: 296, y: 703, size: 6 },
+  { text: '4,463', x: 355.8, y: 700, size: 8 },
+  { text: '1,018', x: 431.5, y: 700, size: 8 },
+  { text: '1,437', x: 493.1, y: 700, size: 8 },
+  { text: '8,364', x: 561.3, y: 700, size: 8 },
+  { text: 'Global Personal', x: 60.8, y: 680, size: 8 },
+  { text: '7,140', x: 224.6, y: 680, size: 8 },
+  { text: '(b)', x: 296, y: 683, size: 6 },
+  { text: '3,862', x: 355.8, y: 680, size: 8 },
+  { text: '1,571', x: 431.5, y: 680, size: 8 },
+  { text: '1,565', x: 493.1, y: 680, size: 8 },
+  { text: '7,086', x: 561.3, y: 680, size: 8 },
+]
 const wrappedFinancialRowLabel = [
   { text: 'Indemnity balance', x: 40, y: 810, size: 14 },
   { text: 'Opening balance', x: 40, y: 780, size: 8 },
@@ -299,6 +330,11 @@ writeFileSync(
   pdfFromRuns(independentFinancialTable),
 )
 console.log('wrote test/fixtures/independent-financial-table.pdf')
+writeFileSync(
+  join(fixturesDir, 'headerless-financial-section.pdf'),
+  pdfFromRuns(headerlessFinancialSection),
+)
+console.log('wrote test/fixtures/headerless-financial-section.pdf')
 writeFileSync(
   join(fixturesDir, 'wrapped-financial-row.pdf'),
   pdfFromRuns(wrappedFinancialRowLabel),
