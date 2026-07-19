@@ -366,6 +366,58 @@ describe('punpdf', () => {
     expect(html[0]).not.toContain('**')
   })
 
+  it('reads aligned narrative columns from top to bottom', async () => {
+    const { html } = await extractHTML(await getPDF('aligned-narrative-columns.pdf'))
+
+    expect(html[0]).not.toContain('<table>')
+    expect(html[0]).toContain('The final left paragraph completes its own argument.')
+    expect(html[0]).toContain('The right column begins an independent policy section')
+    expect(html[0]!.indexOf('The final left paragraph')).toBeLessThan(
+      html[0]!.indexOf('The right column begins'),
+    )
+  })
+
+  it('uses spatial markup for fragmented parallel narrative sections', async () => {
+    const { html } = await extractHTML(await getPDF('fragmented-parallel-narrative.pdf'))
+
+    expect(html[0]).toContain('<figure class="spatial-content"><pre>')
+    expect(html[0]).toMatch(/The first left paragraph introduces operating policy\s+The first right paragraph introduces funding policy/)
+    expect(html[0]).toContain('Both policy discussions finish on their own terms')
+    expect(html[0]).not.toContain('<table>')
+  })
+
+  it('removes repeated page navigation from a merged report', async () => {
+    const { html } = await extractHTML(await getPDF('repeated-page-navigation.pdf'), {
+      mergePages: true,
+    })
+
+    expect(html).toContain('Chair report')
+    expect(html).toContain('Financial review')
+    expect(html).toContain('Funding appendix')
+    expect(html).toContain('<figure class="spatial-content"><pre>')
+    expect(html).not.toContain('Overview')
+    expect(html).not.toContain('Operations')
+    expect(html).not.toContain('Financial statements')
+    expect(html).not.toContain('Appendices')
+  })
+
+  it('uses spatial markup when a narrative sidebar overlaps a table', async () => {
+    const { html } = await extractHTML(await getPDF('table-with-sidebar.pdf'))
+
+    expect(html[0]).toContain('<figure class="spatial-content"><pre>')
+    expect(html[0]).toMatch(/Alex North\s+Controller\s+Example One\s+30 June 2026/)
+    expect(html[0]).toContain('Observer organisations')
+    expect(html[0]).not.toContain('<table>')
+  })
+
+  it('repairs repeated misdecoded checkmark bullets', async () => {
+    const { html } = await extractHTML(await getPDF('misdecoded-checkmarks.pdf'))
+
+    expect(html[0]).toContain('✓ Use measurable performance goals')
+    expect(html[0]).toContain('X Promise automatic payouts')
+    expect(html[0]).not.toContain('ü')
+  })
+
   it('can preserve the rendered page beside extracted semantic content', async () => {
     const { html } = await extractHTML(await getPDF('pdflatex-image.pdf'), {
       preserveLayout: {

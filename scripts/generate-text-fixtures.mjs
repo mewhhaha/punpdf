@@ -10,6 +10,7 @@ const fixturesDir = join(dirname(fileURLToPath(import.meta.url)), '../test/fixtu
 // PDF string literals.
 function pdfFromRuns(runs, {
   additionalPages = [],
+  fontEncoding,
   mediaBox = [0, 0, 595, 842],
   rotate = 0,
 } = {}) {
@@ -23,9 +24,9 @@ function pdfFromRuns(runs, {
   ]
   for (const [pageIndex, pageRuns] of pages.entries()) {
     const content = pageRuns
-      .map(({ text, x, y, size, tm }) => {
+      .map(({ text, pdfLiteral, x, y, size, tm }) => {
         const matrix = tm ?? [1, 0, 0, 1, x, y]
-        return `BT /F1 ${size} Tf ${matrix.join(' ')} Tm (${text}) Tj ET`
+        return `BT /F1 ${size} Tf ${matrix.join(' ')} Tm (${pdfLiteral ?? text}) Tj ET`
       })
       .join('\n')
     const contentReference = pageReferences[pageIndex] + 1
@@ -34,7 +35,8 @@ function pdfFromRuns(runs, {
       `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
     )
   }
-  objects.push('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>')
+  const encoding = fontEncoding ? ` /Encoding /${fontEncoding}` : ''
+  objects.push(`<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica${encoding} >>`)
 
   let pdf = '%PDF-1.4\n'
   const offsets = []
@@ -374,6 +376,193 @@ writeFileSync(
   pdfFromRuns(calendarYearContinuation),
 )
 console.log('wrote test/fixtures/calendar-year-continuation.pdf')
+
+const alignedNarrativeColumns = [
+  { text: 'Operations Overview', x: 40, y: 810, size: 14 },
+  ...[
+    'The left column begins with the operating mandate',
+    'and explains how the insurance fund is administered',
+    'before describing the sources available for funding',
+    'when ordinary assessments cannot cover the shortfall',
+    'The final left paragraph completes its own argument.',
+  ].flatMap((text, lineIndex) => [
+    { text, x: 40, y: 770 - lineIndex * 16, size: 8 },
+  ]),
+  ...[
+    'The right column begins an independent policy section',
+    'and explains how investments must remain available',
+    'before describing the limits placed on borrowing',
+    'when extraordinary liquidity support is necessary',
+    'The final right paragraph completes a separate argument.',
+  ].flatMap((text, lineIndex) => [
+    { text, x: 310, y: 770 - lineIndex * 16, size: 8 },
+  ]),
+]
+writeFileSync(
+  join(fixturesDir, 'aligned-narrative-columns.pdf'),
+  pdfFromRuns(alignedNarrativeColumns),
+)
+console.log('wrote test/fixtures/aligned-narrative-columns.pdf')
+
+const fragmentedParallelNarrative = [
+  { text: 'Parallel Narrative Report', x: 40, y: 810, size: 14 },
+  ...[
+    ['The first left paragraph introduces operating policy', 'The first right paragraph introduces funding policy'],
+    ['The left discussion continues through its second line', 'The right discussion continues through its second line'],
+    ['The left discussion closes its opening paragraph here', 'The right discussion closes its opening paragraph here'],
+  ].flatMap((row, rowIndex) => row.map((text, columnIndex) => ({
+    text,
+    x: [40, 310][columnIndex],
+    y: 770 - rowIndex * 14,
+    size: 8,
+  }))),
+  { text: 'Operating policy continued', x: 40, y: 720, size: 9 },
+  ...[
+    ['A second left paragraph describes the claims process', 'A second right paragraph describes liquidity sources'],
+    ['Its left explanation remains independent and complete', 'Its right explanation remains independent and complete'],
+    ['The second left paragraph ends before the next section', 'The second right paragraph ends before the next section'],
+  ].flatMap((row, rowIndex) => row.map((text, columnIndex) => ({
+    text,
+    x: [40, 310][columnIndex],
+    y: 700 - rowIndex * 14,
+    size: 8,
+  }))),
+  { text: 'Liquidity policy continued', x: 310, y: 650, size: 9 },
+  ...[
+    ['The final left section explains annual assessments', 'The final right section explains emergency borrowing'],
+    ['Each left sentence belongs to the operating narrative', 'Each right sentence belongs to the funding narrative'],
+    ['Both columns finish without becoming table records', 'Both policy discussions finish on their own terms'],
+  ].flatMap((row, rowIndex) => row.map((text, columnIndex) => ({
+    text,
+    x: [40, 310][columnIndex],
+    y: 630 - rowIndex * 14,
+    size: 8,
+  }))),
+]
+writeFileSync(
+  join(fixturesDir, 'fragmented-parallel-narrative.pdf'),
+  pdfFromRuns(fragmentedParallelNarrative),
+)
+console.log('wrote test/fixtures/fragmented-parallel-narrative.pdf')
+
+const repeatedNavigation = [
+  { text: 'Overview', x: 40, y: 820, size: 7 },
+  { text: 'Operations', x: 160, y: 820, size: 7 },
+  { text: 'Financial statements', x: 300, y: 820, size: 7 },
+  { text: 'Appendices', x: 480, y: 820, size: 7 },
+  { text: 'Example Foundation Annual Report 2024', x: 40, y: 804, size: 7 },
+]
+const repeatedNavigationBodyRows = [
+  ['The left report column begins its annual discussion', 'The right report column begins its policy discussion'],
+  ['The annual discussion continues with operating context', 'The policy discussion continues with funding context'],
+  ['The first report sections close before their transitions', 'The first policy sections close before their transitions'],
+  ['The second left section describes current priorities', 'The second right section describes current risks'],
+  ['Each priority remains within the left report column', 'Each risk remains within the right report column'],
+  ['Both second sections conclude before the final pair', 'Both policy sections conclude before the final pair'],
+  ['The final left section records the annual outcome', 'The final right section records the policy outcome'],
+  ['The annual outcome remains complete in its column', 'The policy outcome remains complete in its column'],
+  ['The report columns finish without creating table records', 'The policy columns finish without creating table records'],
+]
+function repeatedNavigationPage(pageNumber, heading, paragraph) {
+  return [
+    ...repeatedNavigation,
+    { text: String(pageNumber), x: 530, y: 804, size: 7 },
+    { text: heading, x: 40, y: 760, size: 14 },
+    { text: paragraph, x: 40, y: 730, size: 9 },
+    ...repeatedNavigationBodyRows.slice(0, 3).flatMap((row, rowIndex) =>
+      row.map((text, columnIndex) => ({
+        text,
+        x: [40, 310][columnIndex],
+        y: 700 - rowIndex * 14,
+        size: 8,
+      }))),
+    { text: 'Annual discussion continued', x: 40, y: 640, size: 9 },
+    ...repeatedNavigationBodyRows.slice(3, 6).flatMap((row, rowIndex) =>
+      row.map((text, columnIndex) => ({
+        text,
+        x: [40, 310][columnIndex],
+        y: 620 - rowIndex * 14,
+        size: 8,
+      }))),
+    { text: 'Policy discussion continued', x: 310, y: 560, size: 9 },
+    ...repeatedNavigationBodyRows.slice(6).flatMap((row, rowIndex) =>
+      row.map((text, columnIndex) => ({
+        text,
+        x: [40, 310][columnIndex],
+        y: 540 - rowIndex * 14,
+        size: 8,
+      }))),
+  ]
+}
+writeFileSync(
+  join(fixturesDir, 'repeated-page-navigation.pdf'),
+  pdfFromRuns(
+    repeatedNavigationPage(1, 'Chair report', 'The chair describes the work completed during the year.'),
+    {
+      additionalPages: [
+        repeatedNavigationPage(2, 'Financial review', 'The review explains the financial result for the year.'),
+        repeatedNavigationPage(3, 'Funding appendix', 'The appendix identifies the principal funding sources.'),
+      ],
+    },
+  ),
+)
+console.log('wrote test/fixtures/repeated-page-navigation.pdf')
+
+const tableWithSidebarRows = [
+  ['Name', 'Position', 'Organisation', 'Term ends'],
+  ['Alex North', 'Controller', 'Example One', '30 June 2026'],
+  ['Blair West', 'Finance Director', 'Example Two', '30 June 2027'],
+  ['Casey South', 'Audit Partner', 'Example Three', '30 June 2025'],
+  ['Devon East', 'Reporting Director', 'Example Four', '30 June 2026'],
+  ['Emery Lake', 'Technical Director', 'Example Five', '30 June 2027'],
+]
+const sidebarLines = [
+  'Observer organisations',
+  'Banking Supervision Committee',
+  'Securities Commission',
+  'Market Conduct Council',
+]
+const tableWithSidebar = [
+  { text: 'Interpretations Committee', x: 40, y: 560, size: 14 },
+  ...tableWithSidebarRows.flatMap((row, rowIndex) => row.map((text, columnIndex) => ({
+    text,
+    x: [40, 180, 310, 430][columnIndex],
+    y: 520 - rowIndex * 24,
+    size: 8,
+  }))),
+  ...sidebarLines.map((text, lineIndex) => ({
+    text,
+    x: 650,
+    y: 520 - lineIndex * 24,
+    size: 8,
+  })),
+]
+writeFileSync(
+  join(fixturesDir, 'table-with-sidebar.pdf'),
+  pdfFromRuns(tableWithSidebar, { mediaBox: [0, 0, 842, 595] }),
+)
+console.log('wrote test/fixtures/table-with-sidebar.pdf')
+
+const misdecodedCheckmarks = [
+  { text: 'Compensation Practices', x: 40, y: 810, size: 14 },
+  { text: 'What We Do', x: 40, y: 770, size: 9 },
+  { text: 'What We Do Not Do', x: 310, y: 770, size: 9 },
+  ...[
+    ['Use measurable performance goals', 'Promise automatic payouts'],
+    ['Review compensation risk annually', 'Provide tax gross ups'],
+    ['Maintain an independent adviser', 'Permit unearned dividends'],
+  ].flatMap((row, rowIndex) => [
+    { text: 'ü', pdfLiteral: '\\374', x: 40, y: 740 - rowIndex * 28, size: 9 },
+    { text: row[0], x: 60, y: 740 - rowIndex * 28, size: 9 },
+    { text: 'X', x: 310, y: 740 - rowIndex * 28, size: 9 },
+    { text: row[1], x: 330, y: 740 - rowIndex * 28, size: 9 },
+  ]),
+]
+writeFileSync(
+  join(fixturesDir, 'misdecoded-checkmarks.pdf'),
+  pdfFromRuns(misdecodedCheckmarks, { fontEncoding: 'WinAnsiEncoding' }),
+)
+console.log('wrote test/fixtures/misdecoded-checkmarks.pdf')
 
 // Row-vector convention: apply m, then n.
 function multiply(m, n) {

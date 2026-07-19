@@ -68,8 +68,82 @@ export async function extractHTML(
     }
   }
   const { text, totalPages } = extractedText
+  const repeatedNavigationCounts = new Map<string, number>()
+  for (const pageText of text) {
+    const leadingLines = pageText.split('\n').slice(0, 4)
+    const navigationLines = new Set(leadingLines.filter((line, lineIndex) => {
+      const cells = line.split('\t').map(cell => cell.trim()).filter(Boolean)
+      const followingLines = leadingLines.slice(lineIndex + 1, lineIndex + 3)
+      const hasPageNumberLine = followingLines.some(followingLine =>
+        followingLine.includes('\t')
+        && followingLine.split('\t').some(cell => /^\d{1,4}$/.test(cell.trim())))
+      return cells.length >= 4
+        && cells.every(cell => /[a-z]/i.test(cell) && cell.length <= 40)
+        && hasPageNumberLine
+    }))
+    for (const navigationLine of navigationLines) {
+      repeatedNavigationCounts.set(
+        navigationLine,
+        (repeatedNavigationCounts.get(navigationLine) ?? 0) + 1,
+      )
+    }
+  }
+  const repeatedNavigationThreshold = Math.max(3, Math.ceil(totalPages / 2))
+  const repeatedNavigationLines = new Set(
+    [...repeatedNavigationCounts]
+      .filter(([, pageCount]) => pageCount >= repeatedNavigationThreshold)
+      .map(([navigationLine]) => navigationLine),
+  )
   const structuredPages = text.map((pageText, pageIndex) => {
-    const lines = pageText.split('\n')
+    let lines = pageText.split('\n')
+    const pageItems = extractedItems.items[pageIndex] ?? []
+    const navigationLineIndex = lines.findIndex((line, lineIndex) =>
+      lineIndex < 3 && repeatedNavigationLines.has(line))
+    if (navigationLineIndex >= 0) {
+      const pageNumberLineIndex = lines.findIndex((line, lineIndex) =>
+        lineIndex > navigationLineIndex
+        && lineIndex <= navigationLineIndex + 2
+        && line.includes('\t')
+        && line.split('\t').some(cell => /^\d{1,4}$/.test(cell.trim())))
+      if (pageNumberLineIndex >= 0) {
+        const pageNumber = lines[pageNumberLineIndex]!
+          .split('\t')
+          .map(cell => cell.trim())
+          .find(cell => /^\d{1,4}$/.test(cell))
+        const pageNumberText = pageItems
+          .filter(textRun => textRun.str === pageNumber)
+          .sort((left, right) => right.y - left.y)[0]
+        if (pageNumberText) {
+          const furnitureBoundary = pageNumberText.y - pageNumberText.fontSize * 0.5
+          for (let textIndex = pageItems.length - 1; textIndex >= 0; textIndex--) {
+            if (pageItems[textIndex]!.y >= furnitureBoundary) {
+              pageItems.splice(textIndex, 1)
+            }
+          }
+        }
+        lines = lines.slice(pageNumberLineIndex + 1)
+      }
+    }
+
+    const misdecodedCheckmarks = pageItems.filter(textRun => textRun.str === 'ü')
+    const checkmarkColumns = misdecodedCheckmarks.map(textRun => textRun.x)
+    const checkmarkColumnSpan = checkmarkColumns.length > 0
+      ? Math.max(...checkmarkColumns) - Math.min(...checkmarkColumns)
+      : Infinity
+    const maximumCheckmarkFontSize = Math.max(
+      0,
+      ...misdecodedCheckmarks.map(textRun => textRun.fontSize),
+    )
+    if (
+      misdecodedCheckmarks.length >= 2
+      && checkmarkColumnSpan <= maximumCheckmarkFontSize * 2
+    ) {
+      for (const textRun of misdecodedCheckmarks) {
+        textRun.str = '✓'
+      }
+      lines = lines.map(line => line.replace(/(^|\t)ü(?=\s)/g, '$1✓'))
+    }
+
     const numberedOutlineEntries = lines.flatMap((line, lineIndex) => {
       const marker = /^(\d+)[.)]?\s+(\S.*)$/.exec(line)
       return marker ? [{ lineIndex, ordinal: Number(marker[1]), text: marker[2]! }] : []
@@ -107,7 +181,6 @@ export async function extractHTML(
           = `   ${String.fromCharCode(96 + entry.ordinal)}. ${entry.text}`
       }
     }
-    const pageItems = extractedItems.items[pageIndex] ?? []
     const fontSizesByText = new Map<string, number[]>()
     const itemsByText = new Map<string, typeof pageItems>()
     for (const item of pageItems) {
@@ -222,11 +295,73 @@ export async function extractHTML(
     const signatureRowCount = lines.filter(line => line.includes('/s/')).length
     const hasFragmentedSignatures = lines.some(line => /^SIGNATURES$/i.test(line))
       && signatureRowCount >= 3
+    const rawTabularRows = lines
+      .filter(line => line.includes('\t'))
+      .map(line => line.split('\t').map(cell => cell.trim()))
+    const rawTabularCells = rawTabularRows.flatMap(row => row.filter(Boolean))
+    const narrativeTableCellCount = rawTabularCells.filter(cell =>
+      (cell.match(/[a-z][a-z'-]*/gi) ?? []).length >= 4).length
+    const numericTableCellCount = rawTabularCells.filter(cell =>
+      /^(?:[$–—-]|\(?\d[\d,.]*%?\)?)$/.test(cell)).length
+    const parallelNarrativeRowCount = rawTabularRows.filter(row =>
+      row.filter(cell => (cell.match(/[a-z][a-z'-]*/gi) ?? []).length >= 4).length >= 2)
+      .length
+    const hasFragmentedParallelNarrative = rawTableRunCount >= 3
+      && parallelNarrativeRowCount >= Math.max(6, Math.ceil(rawTabularRows.length * 0.2))
+      && narrativeTableCellCount >= 15
+      && narrativeTableCellCount >= numericTableCellCount * 0.75
+    const hasSparseCompoundGrid = rawTableRunCount >= 4
+      && rawTabularRows.length >= 10
+      && maximumRawColumnCount >= 5
+      && numericTableCellCount < rawTabularCells.length * 0.25
+    const hasFragmentedDirectory = rawTableRunCount >= 8
+      && maximumRawColumnCount <= 3
+      && rawTabularCells.length >= 50
+      && numericTableCellCount === 0
+      && narrativeTableCellCount >= 15
+    const locatedTabularCells = locateTableCells(rawTabularRows, pageItems)
+    const stableColumnAnchors = stableTableColumnAnchors(
+      locatedTabularCells,
+      rawTabularRows.length,
+      medianPageFontSize,
+    )
+    const widestColumnGap = stableColumnAnchors.slice(1)
+      .map((rightAnchor, gapIndex) => ({
+        gap: rightAnchor - stableColumnAnchors[gapIndex]!,
+        splitAt: (rightAnchor + stableColumnAnchors[gapIndex]!) / 2,
+      }))
+      .sort((left, right) => right.gap - left.gap)[0]
+    const leftColumnCount = widestColumnGap === undefined
+      ? 0
+      : stableColumnAnchors.filter(anchor => anchor < widestColumnGap.splitAt).length
+    const rightColumnCount = stableColumnAnchors.length - leftColumnCount
+    const leftTableCells = widestColumnGap === undefined
+      ? []
+      : locatedTabularCells.filter(cell => cell.x < widestColumnGap.splitAt)
+    const rightTableCells = widestColumnGap === undefined
+      ? []
+      : locatedTabularCells.filter(cell => cell.x >= widestColumnGap.splitAt)
+    const rightNarrativeCellCount = rightTableCells.filter(cell =>
+      /[a-z]/i.test(cell.value) && !/^\(?[\d,.]+%?\)?$/.test(cell.value)).length
+    const hasDetachedNarrativeSidebar = rawTabularRows.length >= 4
+      && maximumRawColumnCount >= 5
+      && widestColumnGap !== undefined
+      && widestColumnGap.gap >= Math.max(100, medianPageFontSize * 12)
+      && leftColumnCount >= 3
+      && rightColumnCount >= 1
+      && rightColumnCount <= 2
+      && rightTableCells.length >= 3
+      && rightTableCells.length <= leftTableCells.length * 0.5
+      && rightNarrativeCellCount >= Math.ceil(rightTableCells.length * 0.8)
     const needsPositionedText = hasFragmentedFinancialTable
       || hasFragmentedSchedule
       || hasDetachedTableLabels
       || hasDetachedExhibitIdentifiers
       || hasFragmentedSignatures
+      || hasDetachedNarrativeSidebar
+      || hasFragmentedParallelNarrative
+      || hasSparseCompoundGrid
+      || hasFragmentedDirectory
     if (needsPositionedText) {
       return [
         ':::spatial',
@@ -552,6 +687,65 @@ export async function extractHTML(
         structuredLines.push(
           ...detachedBulletEntries.flatMap(entry => [`- ${entry}`, '']),
         )
+        continue
+      }
+      const populatedNarrativeCells = rows.flatMap((row, rowIndex) =>
+        row.flatMap((cell, cellIndex) => cell ? [{ cell, cellIndex, rowIndex }] : []))
+      const locatedNarrativeCells = locateTableCells(rows, pageItems)
+      const narrativeColumnAnchors = stableTableColumnAnchors(
+        locatedNarrativeCells,
+        rows.length,
+        medianPageFontSize,
+      )
+      const proseCellCount = populatedNarrativeCells.filter(({ cell }) =>
+        (cell.match(/[a-z][a-z'-]*/gi) ?? []).length >= 4).length
+      const numericNarrativeCellCount = populatedNarrativeCells.filter(({ cell }) =>
+        /^(?:[$–—-]|\(?\d[\d,.]*%?\)?)$/.test(cell)).length
+      const parallelProseRowCount = rows.filter(row =>
+        row.filter(cell => (cell.match(/[a-z][a-z'-]*/gi) ?? []).length >= 4).length >= 2)
+        .length
+      const hasAlignedNarrativeColumns = rows.length >= 4
+        && narrativeColumnAnchors.length >= 2
+        && narrativeColumnAnchors.length <= 4
+        && proseCellCount >= Math.max(6, rows.length)
+        && numericNarrativeCellCount <= Math.max(1, Math.ceil(populatedNarrativeCells.length * 0.05))
+        && parallelProseRowCount >= Math.max(3, Math.ceil(rows.length / 2))
+        && locatedNarrativeCells.length >= Math.ceil(populatedNarrativeCells.length * 0.8)
+      if (hasAlignedNarrativeColumns) {
+        const locatedCellBySource = new Map(locatedNarrativeCells.map(cell => [
+          `${cell.rowIndex}:${cell.cellIndex}`,
+          cell,
+        ]))
+        const narrativeColumns = narrativeColumnAnchors.map(() => [] as string[])
+        for (const [rowIndex, row] of rows.entries()) {
+          const rowValues = narrativeColumnAnchors.map(() => [] as string[])
+          for (const [cellIndex, cell] of row.entries()) {
+            if (!cell) {
+              continue
+            }
+            const locatedCell = locatedCellBySource.get(`${rowIndex}:${cellIndex}`)
+            const nearestColumn = locatedCell === undefined
+              ? undefined
+              : narrativeColumnAnchors
+                  .map((anchor, columnIndex) => ({
+                    columnIndex,
+                    distance: Math.abs(anchor - locatedCell.x),
+                  }))
+                  .sort((left, right) => left.distance - right.distance)
+                  .at(0)
+            const targetColumn = nearestColumn?.columnIndex
+              ?? Math.min(cellIndex, narrativeColumnAnchors.length - 1)
+            rowValues[targetColumn]!.push(cell.replace(/\\([\\|#])/g, '$1'))
+          }
+          for (const [columnIndex, values] of rowValues.entries()) {
+            if (values.length > 0) {
+              narrativeColumns[columnIndex]!.push(values.join(' '))
+            }
+          }
+        }
+        for (const narrativeColumn of narrativeColumns) {
+          structuredLines.push(...narrativeColumn, '')
+        }
         continue
       }
       const exactItemsForCell = (cell: string) => cell
@@ -1642,6 +1836,89 @@ interface OrderedListEntry {
   marker: 'decimal' | 'lower-alpha'
   ordinal: number
   text: string
+}
+
+interface LocatedTableCell {
+  cellIndex: number
+  rowIndex: number
+  value: string
+  x: number
+  y: number
+}
+
+function locateTableCells(
+  rows: string[][],
+  positionedText: StructuredTextItem[],
+): LocatedTableCell[] {
+  const visibleText = positionedText.filter(textRun => textRun.str.trim().length > 0)
+  return rows.flatMap((row, rowIndex) => {
+    const candidatesByCell = row.map((cell) => {
+      const value = cell.replace(/\\([\\|#])/g, '$1')
+      if (!value) {
+        return { value, candidates: [] }
+      }
+      const candidates = visibleText.filter(textRun =>
+        textRun.str === value
+        || value.startsWith(`${textRun.str} `))
+      return { value, candidates }
+    })
+    const possibleBaselines = candidatesByCell.flatMap(({ candidates }) =>
+      candidates.map(textRun => textRun.y))
+    const baseline = possibleBaselines.map(candidateBaseline => ({
+      candidateBaseline,
+      exactCharacters: candidatesByCell.reduce((characterCount, { value, candidates }) => {
+        const matchingText = candidates.filter(textRun =>
+          Math.abs(textRun.y - candidateBaseline) <= Math.max(1, textRun.fontSize * 0.35))
+        return characterCount + Math.max(
+          0,
+          ...matchingText.map(textRun => textRun.str === value ? value.length : 0),
+        )
+      }, 0),
+      matchedCells: candidatesByCell.filter(({ candidates }) => candidates.some(textRun =>
+        Math.abs(textRun.y - candidateBaseline) <= Math.max(1, textRun.fontSize * 0.35)))
+        .length,
+    })).sort((left, right) =>
+      right.matchedCells - left.matchedCells
+      || right.exactCharacters - left.exactCharacters)[0]?.candidateBaseline
+
+    if (baseline === undefined) {
+      return []
+    }
+
+    return candidatesByCell.flatMap(({ value, candidates }, cellIndex) => {
+      const textRun = candidates
+        .filter(candidate =>
+          Math.abs(candidate.y - baseline) <= Math.max(1, candidate.fontSize * 0.35))
+        .sort((left, right) => left.x - right.x || right.str.length - left.str.length)[0]
+      return textRun
+        ? [{ cellIndex, rowIndex, value, x: textRun.x, y: textRun.y }]
+        : []
+    })
+  })
+}
+
+function stableTableColumnAnchors(
+  locatedCells: LocatedTableCell[],
+  rowCount: number,
+  medianFontSize: number,
+): number[] {
+  const clusters: Array<{ cells: LocatedTableCell[], x: number }> = []
+  for (const locatedCell of [...locatedCells].sort((left, right) => left.x - right.x)) {
+    const cluster = clusters.find(candidate =>
+      Math.abs(candidate.x - locatedCell.x) <= Math.max(2, medianFontSize * 2))
+    if (cluster) {
+      cluster.cells.push(locatedCell)
+      cluster.x = cluster.cells.reduce((sum, cell) => sum + cell.x, 0) / cluster.cells.length
+      continue
+    }
+    clusters.push({ cells: [locatedCell], x: locatedCell.x })
+  }
+
+  const minimumRows = Math.max(2, Math.ceil(rowCount * 0.15))
+  return clusters
+    .filter(cluster => new Set(cluster.cells.map(cell => cell.rowIndex)).size >= minimumRows)
+    .map(cluster => cluster.x)
+    .sort((left, right) => left - right)
 }
 
 function renderPositionedTextLines(
