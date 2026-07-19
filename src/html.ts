@@ -305,6 +305,24 @@ export async function extractHTML(
       (cell.match(/[a-z][a-z'-]*/gi) ?? []).length >= 2).length
     const numericTableCellCount = rawTabularCells.filter(cell =>
       /^(?:[$–—-]|\(?\d[\d,.]*%?\)?)$/.test(cell)).length
+    let placeholderFinancialRowRunLength = 0
+    let maximumPlaceholderFinancialRowRunLength = 0
+    for (const row of rawTabularRows) {
+      const populatedCells = row.filter(Boolean)
+      const isPlaceholderFinancialRow = populatedCells.length >= 7
+        && /[a-z]/i.test(populatedCells[0]!)
+        && populatedCells.slice(1).every(cell => /^(?:[–—-]|N\/?A)$/i.test(cell))
+      placeholderFinancialRowRunLength = isPlaceholderFinancialRow
+        ? placeholderFinancialRowRunLength + 1
+        : 0
+      maximumPlaceholderFinancialRowRunLength = Math.max(
+        maximumPlaceholderFinancialRowRunLength,
+        placeholderFinancialRowRunLength,
+      )
+    }
+    const hasPlaceholderFinancialRecordRun = maximumRawColumnCount >= 7
+      && maximumRawColumnCount <= 12
+      && maximumPlaceholderFinancialRowRunLength >= 4
     const parallelNarrativeRowCount = rawTabularRows.filter(row =>
       row.filter(cell => (cell.match(/[a-z][a-z'-]*/gi) ?? []).length >= 4).length >= 2)
       .length
@@ -374,6 +392,7 @@ export async function extractHTML(
       || hasFragmentedSignatures
       || hasDetachedNarrativeSidebar
       || hasDenseParallelFinancialTable
+      || hasPlaceholderFinancialRecordRun
       || hasFragmentedParallelNarrative
       || hasSparseCompoundGrid
       || hasFragmentedDirectory

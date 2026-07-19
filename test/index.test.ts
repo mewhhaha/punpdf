@@ -344,6 +344,15 @@ describe('punpdf', () => {
     expect(html[0]).not.toContain('<table>')
   })
 
+  it('uses spatial markup when placeholder financial records follow a wrapped header', async () => {
+    const { html } = await extractHTML(await getPDF('placeholder-financial-records.pdf'))
+
+    expect(html[0]).toContain('<figure class="spatial-content"><pre>')
+    expect(html[0]).toMatch(/Supervisory function\s+-\s+-\s+-\s+-\s+-\s+-\s+-\s+-/)
+    expect(html[0]).toMatch(/Management function\s+58\.9\s+4\.1\s+4\.2\s+1\.9\s+48\.7/)
+    expect(html[0]).not.toContain('<table>')
+  })
+
   it('joins a wrapped financial row label without dropping its trailing value', async () => {
     const { html } = await extractHTML(await getPDF('wrapped-financial-row.pdf'))
 

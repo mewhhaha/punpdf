@@ -320,6 +320,27 @@ const denseParallelFinancialTable = [
     ]
   }).flat(),
 ]
+const placeholderFinancialRecords = [
+  { text: 'Deferred remuneration', x: 40, y: 810, size: 14 },
+  ...[
+    ['Amount of', 'performance', 'adjustment', 'Total amount', 'of deferred', 'remuneration', 'awarded for', 'previous', 'periods'],
+    ['performance', 'made in the', 'financial year', 'Total', 'amount of', 'deferred', 'remuneration', 'during the', 'year'],
+    ['adjustment', 'of which:', 'due to', 'vesting in', 'subsequent', 'financial', 'years', 'before the', 'period'],
+    ['$m', 'periods', 'year', 'years', 'financial year', 'years', 'adjustments', 'financial year', 'periods'],
+    ['Supervisory function', '-', '-', '-', '-', '-', '-', '-', '-'],
+    ['Cash-based', '-', '-', '-', '-', '-', '-', '-', '-'],
+    ['Shares', '-', '-', '-', '-', '-', '-', '-', '-'],
+    ['Other instruments', '-', '-', '-', '-', '-', '-', '-', '-'],
+    ['Management function', '58.9', '4.1', '4.2', '1.9', '48.7', '4.2', '5.2', '1.8'],
+    ['Cash-based', '37.4', '3.8', '3.5', '1.5', '30.3', '3.5', '3.7', '1.4'],
+    ['Shares', '14.8', '0.3', '0.7', '0.4', '12.7', '0.7', '1.5', '0.4'],
+  ].flatMap((row, rowIndex) => row.map((text, columnIndex) => ({
+    text,
+    x: [40, 190, 240, 290, 340, 395, 445, 495, 545][columnIndex],
+    y: 780 - rowIndex * 20,
+    size: 7,
+  }))),
+]
 const wrappedFinancialRowLabel = [
   { text: 'Indemnity balance', x: 40, y: 810, size: 14 },
   { text: 'Opening balance', x: 40, y: 780, size: 8 },
@@ -362,6 +383,11 @@ writeFileSync(
   pdfFromRuns(denseParallelFinancialTable),
 )
 console.log('wrote test/fixtures/dense-parallel-financial-table.pdf')
+writeFileSync(
+  join(fixturesDir, 'placeholder-financial-records.pdf'),
+  pdfFromRuns(placeholderFinancialRecords),
+)
+console.log('wrote test/fixtures/placeholder-financial-records.pdf')
 writeFileSync(
   join(fixturesDir, 'wrapped-financial-row.pdf'),
   pdfFromRuns(wrappedFinancialRowLabel),
