@@ -1922,7 +1922,7 @@ function renderChartTables(positionedText: StructuredTextItem[]): string[] | und
         .length >= 2
   })
   if (!summaryHeader) {
-    return undefined
+    return renderPositionedChartTables(positionedText)
   }
 
   const summaryColumns = summaryHeader.items
@@ -1933,7 +1933,7 @@ function renderChartTables(positionedText: StructuredTextItem[]): string[] | und
       && line.items.filter(item => numericValue(item.str)).length >= summaryColumns.length)
     .sort((left, right) => right.y - left.y)
   if (summaryRows.length < 2) {
-    return undefined
+    return renderPositionedChartTables(positionedText)
   }
   const summaryBody = summaryRows.map((line) => {
     const label = line.items
@@ -1998,7 +1998,7 @@ function renderChartTables(positionedText: StructuredTextItem[]): string[] | und
     .filter(([, series]) => series.length >= 2 && series.every(entry => entry.values.length >= 3))
     .sort((left, right) => left[0] - right[0])
   if (numericCharts.length < 2) {
-    return undefined
+    return renderPositionedChartTables(positionedText)
   }
 
   const chartTables = numericCharts.map(([start, series], chartIndex) => {
@@ -2115,7 +2115,7 @@ function renderChartTables(positionedText: StructuredTextItem[]): string[] | und
     }
   }).filter(chart => chart.rows.length >= 2)
   if (categoricalCharts.length < 2) {
-    return undefined
+    return renderPositionedChartTables(positionedText)
   }
 
   const sectionHeading = visibleText
@@ -2140,6 +2140,436 @@ function renderChartTables(positionedText: StructuredTextItem[]): string[] | und
     ...table.rows.map(renderStructuredRow),
     '',
   ])
+}
+
+interface PositionedChartRegion {
+  title: StructuredTextItem
+  left: number
+  right: number
+  top: number
+  bottom: number
+}
+
+interface PositionedChartTable {
+  title: string
+  subtitle?: string
+  header: string[]
+  rows: string[][]
+}
+
+function renderPositionedChartTables(
+  positionedText: StructuredTextItem[],
+): string[] | undefined {
+  const visibleRuns = positionedText.filter(run => run.str.trim().length > 0)
+  if (visibleRuns.length < 20) {
+    return undefined
+  }
+
+  const medianFontSize = itemMedianFontSize(visibleRuns)
+  const topBaseline = Math.max(...visibleRuns.map(run => run.y))
+  const longTitles = visibleRuns.filter((run) => {
+    const wordCount = run.str.match(/[a-z]+/gi)?.length ?? 0
+    return run.fontSize >= medianFontSize * 1.25
+      && wordCount >= 4
+      && run.str.length <= 90
+      && run.y < topBaseline - medianFontSize * 12
+  })
+  const shortTitles = visibleRuns.filter((run) => {
+    const wordCount = run.str.match(/[a-z0-9]+/gi)?.length ?? 0
+    return run.fontSize >= medianFontSize * 2
+      && wordCount >= 1
+      && wordCount <= 3
+      && run.str.length <= 20
+      && run.y < topBaseline - medianFontSize * 8
+  })
+  const titleRuns = longTitles.length >= 6 ? longTitles : shortTitles
+  const minimumTitleCount = longTitles.length >= 6 ? 6 : 3
+  if (titleRuns.length < minimumTitleCount) {
+    return undefined
+  }
+
+  const titleRows: PositionedTextLine[] = []
+  for (const titleRun of [...titleRuns].sort((left, right) => right.y - left.y || left.x - right.x)) {
+    const row = titleRows.find(candidate =>
+      Math.abs(candidate.y - titleRun.y) <= medianFontSize * 1.75)
+    if (row) {
+      row.items.push(titleRun)
+    }
+    else {
+      titleRows.push({ y: titleRun.y, items: [titleRun] })
+    }
+  }
+  for (const row of titleRows) {
+    row.items.sort((left, right) => left.x - right.x)
+  }
+  if (titleRows.length < 2) {
+    return undefined
+  }
+
+  const chartLeft = Math.min(...visibleRuns.map(run => run.x))
+  const chartRight = Math.max(...visibleRuns.map(run => run.x + run.width))
+  const chartBottom = Math.min(...visibleRuns.map(run => run.y))
+  const regions = titleRows.flatMap((titleRow, titleRowIndex) => {
+    const nextRow = titleRows[titleRowIndex + 1]
+    return titleRow.items.map((titleRun, titleIndex): PositionedChartRegion => {
+      const precedingTitle = titleRow.items[titleIndex - 1]
+      const followingTitle = titleRow.items[titleIndex + 1]
+      const titleCenter = titleRun.x + titleRun.width / 2
+      const left = precedingTitle
+        ? (precedingTitle.x + precedingTitle.width / 2 + titleCenter) / 2
+        : chartLeft
+      const right = followingTitle
+        ? (titleCenter + followingTitle.x + followingTitle.width / 2) / 2
+        : chartRight
+      const bottom = nextRow
+        ? Math.max(...nextRow.items.map(run => run.y)) + medianFontSize * 2
+        : Math.max(chartBottom - medianFontSize, titleRun.y - medianFontSize * 25)
+      return {
+        title: titleRun,
+        left,
+        right,
+        top: titleRun.y - medianFontSize,
+        bottom,
+      }
+    })
+  })
+  if (shortTitles === titleRuns) {
+    const regionLegendCount = regions.filter((region) => {
+      const lines = groupPositionedLines(visibleRuns.filter(run =>
+        run.x >= region.left
+        && run.x < region.right
+        && run.y < region.top
+        && run.y > region.top - medianFontSize * 8))
+      return lines.some(line =>
+        line.items.length >= 2
+        && line.items.length <= 5
+        && line.items.every(run => !chartNumericValue(run.str)))
+    }).length
+    if (regionLegendCount < 2) {
+      return undefined
+    }
+  }
+
+  const chartTables = regions.map(region => extractPositionedChartTable(
+    region,
+    visibleRuns,
+    medianFontSize,
+  ))
+  const knownCategories = new Map<string, string[]>()
+  for (const chart of chartTables) {
+    const dimension = chartDimension(chart.title)
+    const categories = chart.rows.map(row => row[0]!).filter(Boolean)
+    const known = knownCategories.get(dimension) ?? []
+    if (categories.length > known.length) {
+      knownCategories.set(dimension, categories)
+    }
+  }
+  for (const chart of chartTables) {
+    const observedCategories = knownCategories.get(chartDimension(chart.title)) ?? []
+    if (chart.rows.length === 0) {
+      continue
+    }
+    const normalizedCategories = observedCategories.map(category =>
+      category.toLowerCase().replaceAll(/[^a-z0-9]/g, ''))
+    chart.rows = chart.rows.flatMap((row) => {
+      const normalizedCategory = row[0]!.toLowerCase().replaceAll(/[^a-z0-9]/g, '')
+      const matchingCategories = observedCategories.filter((_, categoryIndex) =>
+        normalizedCategory.includes(normalizedCategories[categoryIndex]!))
+      const combinedMatch = matchingCategories.length >= 2
+        && matchingCategories
+          .map(category => category.toLowerCase().replaceAll(/[^a-z0-9]/g, ''))
+          .join('') === normalizedCategory
+      return combinedMatch
+        ? matchingCategories.map(category => [category, ...row.slice(1)])
+        : [row]
+    })
+    if (
+      chart.rows.length === observedCategories.length
+      && chart.rows.every(row => !row[0])
+    ) {
+      chart.rows = chart.rows.map((row, rowIndex) => [observedCategories[rowIndex]!, ...row.slice(1)])
+    }
+    const chartHasOnlyEmptyValues = chart.rows.every(row => row.slice(1).every(value => !value))
+    const chartHasMonthlyCategories = chart.rows.every(row =>
+      /^(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)$/i.test(row[0]!))
+    if (
+      chartHasOnlyEmptyValues
+      && chartHasMonthlyCategories
+      && observedCategories.length > chart.rows.length
+    ) {
+      chart.rows = observedCategories.map(category => [
+        category,
+        ...chart.header.slice(1).map(() => ''),
+      ])
+    }
+  }
+
+  const firstTitleBaseline = Math.max(...titleRows[0]!.items.map(run => run.y))
+  const upperLines = groupPositionedLines(visibleRuns.filter(run => run.y > firstTitleBaseline))
+  const summaryHeader = upperLines.find((line) => {
+    if (line.items.length < 5 || line.items.some(run => chartNumericValue(run.str))) {
+      return false
+    }
+    return upperLines.some(candidate =>
+      candidate.y < line.y
+      && line.y - candidate.y <= medianFontSize * 5
+      && candidate.items.filter(run => chartNumericValue(run.str)).length >= line.items.length)
+  })
+  const summaryValues = summaryHeader
+    ? upperLines
+      .filter(line =>
+        line.y < summaryHeader.y
+        && summaryHeader.y - line.y <= medianFontSize * 5
+        && line.items.filter(run => chartNumericValue(run.str)).length >= summaryHeader.items.length)
+      .sort((left, right) => right.y - left.y)[0]
+    : undefined
+  const summaryTable = summaryHeader && summaryValues
+    ? [
+        ':::chart-table',
+        renderStructuredRow(summaryHeader.items.map(run => run.str)),
+        renderStructuredRow(summaryHeader.items.map(() => '---')),
+        renderStructuredRow(summaryHeader.items.map(headerRun => summaryValues.items
+          .filter(run => chartNumericValue(run.str))
+          .sort((left, right) =>
+            Math.abs(left.x + left.width / 2 - headerRun.x - headerRun.width / 2)
+            - Math.abs(right.x + right.width / 2 - headerRun.x - headerRun.width / 2))[0]
+          ?.str ?? '')),
+        '',
+      ]
+    : []
+  const note = visibleRuns
+    .filter(run =>
+      run.y > firstTitleBaseline
+      && run.str.length >= 60
+      && run.fontSize <= medianFontSize * 1.5)
+    .sort((left, right) => right.y - left.y)[0]
+  const renderedCharts = chartTables.flatMap(chart => [
+    `## ${chart.title}`,
+    ...(chart.subtitle ? ['', chart.subtitle] : []),
+    '',
+    ':::chart-table',
+    renderStructuredRow(chart.header),
+    renderStructuredRow(chart.header.map(() => '---')),
+    ...chart.rows.map(renderStructuredRow),
+    '',
+  ])
+  return [
+    ...(note ? [note.str, ''] : []),
+    ...summaryTable,
+    ...renderedCharts,
+  ]
+}
+
+function extractPositionedChartTable(
+  region: PositionedChartRegion,
+  visibleRuns: StructuredTextItem[],
+  medianFontSize: number,
+): PositionedChartTable {
+  const regionRuns = visibleRuns.filter(run =>
+    run.x >= region.left
+    && run.x < region.right
+    && run.y < region.top
+    && run.y > region.bottom)
+  const title = region.title.str.trim()
+  const subtitleRun = regionRuns.find(run => /^\(.+\)$/.test(run.str.trim()))
+  const legendLine = groupPositionedLines(regionRuns.filter(run =>
+    run.y > region.top - medianFontSize * 6
+    && run.str !== subtitleRun?.str))
+    .sort((left, right) => right.y - left.y)
+    .find(line =>
+      line.items.length >= 2
+      && line.items.length <= 5
+      && line.items.every(run =>
+        run.str.trim().length <= 35
+        && (!chartNumericValue(run.str) || /^\d$/.test(run.str.trim()))))
+  const dimensionSeparator = title.toLowerCase().lastIndexOf(' by ')
+  const metricTitle = dimensionSeparator === -1 ? title : title.slice(0, dimensionSeparator)
+  const titleSeries = metricTitle.split(/\s+vs\s+/i)
+  const series = legendLine
+    ? legendLine.items.map(run => run.str.trim())
+    : titleSeries.length >= 2
+      ? titleSeries
+      : [titleSeries[0] ?? title]
+
+  const expandedNumericRuns = regionRuns
+    .filter(run =>
+      !legendLine?.items.includes(run)
+      && (chartNumericValue(run.str) || chartPackedNumericValues(run.str).length >= 2))
+    .flatMap((run) => {
+      const values = chartPackedNumericValues(run.str)
+      if (values.length < 2) {
+        return [{ ...run, str: run.str.trim() }]
+      }
+      return values.map((value, valueIndex) => ({
+        ...run,
+        str: value,
+        x: run.x + run.width * valueIndex / values.length,
+        width: run.width / values.length,
+      }))
+    })
+    .filter((run, runIndex, runs) => runs.findIndex(candidate =>
+      candidate.str === run.str
+      && Math.abs(candidate.x - run.x) <= 0.5
+      && Math.abs(candidate.y - run.y) <= 0.5) === runIndex)
+  const yAxisTicks = new Set<number>()
+  const numericXGroups: Array<{ right: number, runs: StructuredTextItem[] }> = []
+  for (const numericRun of expandedNumericRuns) {
+    const numericRunRight = numericRun.x + numericRun.width
+    const group = numericXGroups.find(candidate =>
+      Math.abs(candidate.right - numericRunRight) <= medianFontSize * 0.75)
+    if (group) {
+      group.runs.push(numericRun)
+    }
+    else {
+      numericXGroups.push({ right: numericRunRight, runs: [numericRun] })
+    }
+  }
+  for (const group of numericXGroups) {
+    const baselines = group.runs.map(run => run.y)
+    if (
+      group.right < region.left + (region.right - region.left) * 0.2
+      && group.runs.length >= 4
+      && Math.max(...baselines) - Math.min(...baselines) > (region.top - region.bottom) * 0.3
+    ) {
+      group.runs.forEach(run => yAxisTicks.add(expandedNumericRuns.indexOf(run)))
+    }
+  }
+  const xAxisTicks = new Set<number>()
+  const numericLines = groupPositionedLines(expandedNumericRuns)
+  for (const line of numericLines) {
+    const horizontalSpan = Math.max(...line.items.map(run => run.x + run.width))
+      - Math.min(...line.items.map(run => run.x))
+    if (
+      line.items.length >= 4
+      && line.y < region.bottom + (region.top - region.bottom) * 0.25
+      && horizontalSpan > (region.right - region.left) * 0.4
+    ) {
+      line.items.forEach(run => xAxisTicks.add(expandedNumericRuns.indexOf(run)))
+    }
+  }
+  const valueRuns = expandedNumericRuns.filter((_, runIndex) =>
+    !yAxisTicks.has(runIndex) && !xAxisTicks.has(runIndex))
+
+  const categoryRuns = regionRuns.filter(run =>
+    run.y < region.bottom + (region.top - region.bottom) * 0.25
+    && !chartNumericValue(run.str)
+    && chartPackedNumericValues(run.str).length < 2
+    && run !== subtitleRun
+    && !legendLine?.items.includes(run))
+  const horizontalCategories = regionRuns
+    .filter(run =>
+      !chartNumericValue(run.str)
+      && chartPackedNumericValues(run.str).length < 2
+      && run !== subtitleRun
+      && !legendLine?.items.includes(run))
+    .filter(categoryRun => valueRuns.some(valueRun =>
+      Math.abs(valueRun.y - categoryRun.y) <= medianFontSize
+      && valueRun.x > categoryRun.x + categoryRun.width))
+    .sort((left, right) => right.y - left.y)
+  if (horizontalCategories.length >= 3) {
+    const rows = horizontalCategories.map((categoryRun) => {
+      const values = valueRuns
+        .filter(valueRun => Math.abs(valueRun.y - categoryRun.y) <= medianFontSize)
+        .sort((left, right) => left.x - right.x)
+      return [categoryRun.str.trim(), ...series.map((_, seriesIndex) => values[seriesIndex]?.str ?? '')]
+    })
+    return { title, subtitle: subtitleRun?.str, header: ['Category', ...series], rows }
+  }
+
+  const monthRuns = categoryRuns.flatMap((run) => {
+    const months = run.str.trim().split(/\s+/).filter(value => /^(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)$/i.test(value))
+    if (months.length === 0) {
+      return []
+    }
+    return months.map((month, monthIndex) => ({
+      ...run,
+      str: month,
+      x: run.x + run.width * monthIndex / months.length,
+      width: run.width / months.length,
+    }))
+  })
+  let categories: Array<{ label: string, center: number }> = []
+  if (monthRuns.length >= 3) {
+    categories = monthRuns
+      .sort((left, right) => left.x - right.x)
+      .map(run => ({ label: run.str, center: run.x + run.width / 2 }))
+  }
+  else {
+    const categoryLines = groupPositionedLines(categoryRuns)
+    const anchors = [...categoryLines]
+      .sort((left, right) => right.items.length - left.items.length)[0]
+      ?.items ?? []
+    categories = anchors.map((anchor) => {
+      const center = anchor.x + anchor.width / 2
+      const label = categoryRuns
+        .filter((run) => {
+          const nearest = anchors
+            .map(candidate => ({
+              candidate,
+              distance: Math.abs(candidate.x + candidate.width / 2 - run.x - run.width / 2),
+            }))
+            .sort((left, right) => left.distance - right.distance)[0]
+          return nearest?.candidate === anchor
+        })
+        .sort((left, right) => right.y - left.y)
+        .map((run) => {
+          const characters = run.str.trim().split(/\s+/)
+          return characters.length >= 3 && characters.every(character => character.length === 1)
+            ? characters.join('')
+            : run.str.trim()
+        })
+        .join(' ')
+      return { label, center }
+    }).sort((left, right) => left.center - right.center)
+  }
+
+  const orderedValues = [...valueRuns].sort((left, right) => left.x - right.x)
+  const expectedValueCount = categories.length * series.length
+  const valuesByCategory = orderedValues.length === expectedValueCount
+    ? categories.map((_, categoryIndex) =>
+        orderedValues.slice(categoryIndex * series.length, (categoryIndex + 1) * series.length))
+    : categories.map(category => valueRuns
+        .filter((valueRun) => {
+          const nearest = categories
+            .map(candidate => ({
+              candidate,
+              distance: Math.abs(candidate.center - valueRun.x - valueRun.width / 2),
+            }))
+            .sort((left, right) => left.distance - right.distance)[0]
+          return nearest?.candidate === category
+        })
+        .sort((left, right) => left.x - right.x))
+  if (categories.length === 0 && valueRuns.length > 0) {
+    const inferredRowCount = Math.ceil(orderedValues.length / series.length)
+    categories = Array.from({ length: inferredRowCount }, (_, rowIndex) => ({
+      label: '',
+      center: orderedValues[rowIndex * series.length]?.x ?? rowIndex,
+    }))
+    valuesByCategory.push(...categories.map((_, rowIndex) =>
+      orderedValues.slice(rowIndex * series.length, (rowIndex + 1) * series.length)))
+  }
+  const rows = categories.map((category, categoryIndex) => [
+    category.label,
+    ...series.map((_, seriesIndex) => valuesByCategory[categoryIndex]?.[seriesIndex]?.str ?? ''),
+  ])
+  return { title, subtitle: subtitleRun?.str, header: ['Category', ...series], rows }
+}
+
+function chartNumericValue(value: string): boolean {
+  return /^(?:[-+]?[$€£]?\(?\d[\d,.]*\)?%?|[–—-])$/.test(value.trim())
+}
+
+function chartPackedNumericValues(value: string): string[] {
+  const values = value.trim().split(/\s+/)
+  return values.length >= 2 && values.every(chartNumericValue) ? values : []
+}
+
+function chartDimension(title: string): string {
+  if (/^\d+\s*(?:br|bed(?:room)?s?)$/i.test(title)) {
+    return 'bedroom count'
+  }
+  const separator = title.toLowerCase().lastIndexOf(' by ')
+  return separator === -1 ? title.toLowerCase() : title.slice(separator + 4).toLowerCase()
 }
 
 function itemMedianFontSize(items: StructuredTextItem[]): number {
@@ -2186,6 +2616,7 @@ interface TableRow {
   kind: 'row'
   cells: string[]
   group?: boolean
+  hierarchyLevel?: number
 }
 
 interface TableSectionRow {
@@ -2197,6 +2628,7 @@ interface TableBlock {
   kind: 'table'
   header: string[]
   body: Array<TableRow | TableSectionRow>
+  layout?: 'chart'
   columnGroups?: ColumnGroup[]
   columnAnchors?: number[]
 }
@@ -2688,6 +3120,10 @@ function enrichPositionedTableLayout(
       enriched.push(block)
       continue
     }
+    if (block.layout === 'chart') {
+      enriched.push(block)
+      continue
+    }
 
     const bodyRows = block.body.filter((row): row is TableRow => row.kind === 'row')
     const locatedBodyCells = locateTableCells(bodyRows.map(row => row.cells), positionedText)
@@ -2705,6 +3141,33 @@ function enrichPositionedTableLayout(
         : block.columnAnchors,
     }
     const detachedContext: PageBlock[] = []
+
+    const precedingLabel = enriched.at(-1)
+    const finalBodyRow = bodyRows.at(-1)
+    const finalRowCells = locatedBodyCells.filter(cell => cell.rowIndex === bodyRows.length - 1)
+    const finalRowBaseline = finalRowCells.length > 0
+      ? finalRowCells.map(cell => cell.y).sort((left, right) => left - right)[Math.floor(finalRowCells.length / 2)]
+      : undefined
+    const detachedLabel = precedingLabel?.kind === 'paragraph' && precedingLabel.lines.length === 1
+      ? precedingLabel.lines[0]
+      : undefined
+    const alignedDetachedLabel = detachedLabel && finalBodyRow && !finalBodyRow.cells[0]
+      && finalBodyRow.cells.filter(cell => parseFinancialValue(cell) !== undefined).length >= 3
+      && finalRowBaseline !== undefined
+      ? positionedText.find(item =>
+          item.str === detachedLabel
+          && Math.abs(item.y - finalRowBaseline) <= item.fontSize * 0.75
+          && item.x < Math.min(...finalRowCells.map(cell => cell.x)))
+      : undefined
+    if (alignedDetachedLabel && finalBodyRow) {
+      table = {
+        ...table,
+        body: table.body.map(row => row === finalBodyRow
+          ? { ...row, cells: [alignedDetachedLabel.str, ...row.cells.slice(1)] }
+          : row),
+      }
+      enriched.pop()
+    }
 
     const firstBodyBaseline = Math.max(
       -Infinity,
@@ -2819,6 +3282,38 @@ function enrichPositionedTableLayout(
 
     table = inferRepeatedPositionedColumnGroups(table, positionedText, firstBodyBaseline)
     table = inferPositionedMetricGroups(table, positionedText, firstBodyBaseline)
+    const resolvedColumnGroups = table.columnGroups ?? inferAnchoredColumnGroups(table.header)
+    let precedingTableIndex = enriched.length - 1
+    while (enriched[precedingTableIndex]?.kind === 'paragraph') {
+      precedingTableIndex--
+    }
+    const preceding = enriched[precedingTableIndex]
+    if (
+      resolvedColumnGroups.length >= 3
+      && preceding?.kind === 'table'
+      && preceding.body.length <= 2
+    ) {
+      const precedingCells = [
+        ...preceding.header,
+        ...preceding.body.flatMap(row => row.kind === 'row' ? row.cells : [row.label]),
+      ].flatMap(cell => cell.split('<br>').filter(Boolean))
+      const normalizeLabel = (label: string) => label.toLowerCase().replaceAll(/\s+/g, ' ').trim()
+      const groupLabels = new Set(resolvedColumnGroups.map(group => normalizeLabel(group.label)))
+      const precedingLabels = precedingCells.map(cell => normalizeLabel(cell))
+      const containsEveryGroupLabel = [...groupLabels].every(label =>
+        precedingLabels.includes(label))
+      if (
+        containsEveryGroupLabel
+        && precedingCells.length <= resolvedColumnGroups.length + 3
+      ) {
+        const contextLines = precedingCells.filter(cell =>
+          !groupLabels.has(normalizeLabel(cell)))
+        enriched.splice(precedingTableIndex, 1)
+        if (contextLines.length > 0) {
+          enriched.splice(precedingTableIndex, 0, { kind: 'paragraph', lines: contextLines })
+        }
+      }
+    }
     table = markIndentedTableGroups(table, positionedText)
     if (detachedContext.length > 0) {
       enriched.push(...detachedContext)
@@ -3078,19 +3573,99 @@ function markIndentedTableGroups(
   positionedText: StructuredTextItem[],
 ): TableBlock {
   const rows = table.body.filter((row): row is TableRow => row.kind === 'row')
-  if (rows.length < 20 || table.header.length < 5) {
+  if (
+    rows.length < 20
+    || table.header.length < 5
+    || table.columnGroups
+    || inferAnchoredColumnGroups(table.header).length > 1
+  ) {
     return table
   }
   const locatedFirstCells = locateTableCells(rows.map(row => row.cells), positionedText)
     .filter(cell => cell.cellIndex === 0)
-  const leftEdge = Math.min(...locatedFirstCells.map(cell => cell.x))
+  const trailingRowIndex = rows.length - 1
+  const trailingRow = rows[trailingRowIndex]
+  const trailingRowIsTotal = /^(?:Grand )?Totals?\b/i.test(
+    trailingRow?.cells[0]?.replaceAll('**', '') ?? '',
+  )
+  const structuralFirstCells = trailingRowIsTotal
+    ? locatedFirstCells.filter(cell => cell.rowIndex !== trailingRowIndex)
+    : locatedFirstCells
+  const indentationBands: Array<{
+    x: number
+    cells: typeof locatedFirstCells
+  }> = []
+  for (const cell of structuralFirstCells.sort((left, right) => left.x - right.x)) {
+    const band = indentationBands.find(candidate => Math.abs(candidate.x - cell.x) <= 2)
+    if (band) {
+      band.cells.push(cell)
+      band.x = band.cells.reduce((sum, candidate) => sum + candidate.x, 0) / band.cells.length
+    }
+    else {
+      indentationBands.push({ x: cell.x, cells: [cell] })
+    }
+  }
+  const hierarchyLevels = new Map(indentationBands.flatMap((band, hierarchyLevel) =>
+    band.cells.map(cell => [cell.rowIndex, hierarchyLevel] as const)))
+  const hierarchyCounts = indentationBands.map(band => band.cells.length)
+  if (
+    !hierarchyLevels.has(trailingRowIndex)
+    && trailingRowIsTotal
+  ) {
+    hierarchyLevels.set(trailingRowIndex, 0)
+    hierarchyCounts[0] = (hierarchyCounts[0] ?? 0) + 1
+  }
+  let hasRoot = false
+  let hasParent = false
+  const followsHierarchy = rows.every((_, rowIndex) => {
+    const hierarchyLevel = hierarchyLevels.get(rowIndex)
+    if (hierarchyLevel === undefined) {
+      return false
+    }
+    if (hierarchyLevel === 0) {
+      hasRoot = true
+      hasParent = false
+      return true
+    }
+    if (hierarchyLevel === 1) {
+      hasParent = hasRoot
+      return hasParent
+    }
+    return hierarchyLevel === 2 && hasParent
+  })
+  if (
+    indentationBands.length === 3
+    && hierarchyCounts[0]! >= 2
+    && hierarchyCounts[1]! >= 2
+    && hierarchyCounts[2]! >= 4
+    && followsHierarchy
+  ) {
+    let rowIndex = 0
+    return {
+      ...table,
+      body: table.body.map((row) => {
+        if (row.kind !== 'row') {
+          return row
+        }
+        const hierarchyLevel = hierarchyLevels.get(rowIndex)!
+        rowIndex++
+        return {
+          ...row,
+          group: hierarchyLevel === 0,
+          hierarchyLevel,
+        }
+      }),
+    }
+  }
+
+  const leftEdge = Math.min(...structuralFirstCells.map(cell => cell.x))
   const secondIndent = Math.min(
     Infinity,
-    ...locatedFirstCells.filter(cell => cell.x > leftEdge + 2).map(cell => cell.x),
+    ...structuralFirstCells.filter(cell => cell.x > leftEdge + 2).map(cell => cell.x),
   )
-  const groupRows = new Set(locatedFirstCells
+  const groupRows = new Set(structuralFirstCells
     .filter((cell) => {
-      const following = locatedFirstCells.find(candidate => candidate.rowIndex === cell.rowIndex + 1)
+      const following = structuralFirstCells.find(candidate => candidate.rowIndex === cell.rowIndex + 1)
       return cell.x < secondIndent && following !== undefined && following.x >= secondIndent
     })
     .map(cell => cell.rowIndex))
@@ -3620,6 +4195,7 @@ tbody th[scope="row"] { font-weight: 400; }
 tr.section th { background: #dbeafe; }
 tr.summary > * { background: #f1f5f9; font-weight: 700; }
 tr.group > * { background: #e2e8f0; font-weight: 700; }
+tr.subgroup > * { background: #f8fafc; font-weight: 700; }
 tfoot { border-top: 2px solid #475569; }
 .parallel-tables { align-items: start; display: grid; gap: 2rem; grid-template-columns: repeat(var(--parallel-count), minmax(0, 1fr)); overflow-x: auto; }
 .parallel-tables table { width: 100%; }
@@ -3673,10 +4249,12 @@ function parsePageBlocks(page: string): PageBlock[] {
       continue
     }
 
-    const tableHeader = structuredTableCells(line)
-    if (tableHeader && /^\|(?:\s*---\s*\|)+$/.test(lines[lineIndex + 1] ?? '')) {
+    const chartTable = line === ':::chart-table'
+    const tableLineIndex = chartTable ? lineIndex + 1 : lineIndex
+    const tableHeader = structuredTableCells(lines[tableLineIndex] ?? '')
+    if (tableHeader && /^\|(?:\s*---\s*\|)+$/.test(lines[tableLineIndex + 1] ?? '')) {
       const body: TableRow[] = []
-      lineIndex += 2
+      lineIndex = tableLineIndex + 2
       while (lineIndex < lines.length) {
         const cells = structuredTableCells(lines[lineIndex]!)
         if (!cells) {
@@ -3685,7 +4263,9 @@ function parsePageBlocks(page: string): PageBlock[] {
         body.push({ kind: 'row', cells })
         lineIndex++
       }
-      blocks.push(normalizeTable({ kind: 'table', header: tableHeader, body }))
+      blocks.push(chartTable
+        ? { kind: 'table', header: tableHeader, body, layout: 'chart' }
+        : normalizeTable({ kind: 'table', header: tableHeader, body }))
       continue
     }
 
@@ -3778,6 +4358,10 @@ function mergeTableSections(
   for (let blockIndex = 0; blockIndex < blocks.length; blockIndex++) {
     const block = blocks[blockIndex]!
     if (block.kind !== 'table') {
+      merged.push(block)
+      continue
+    }
+    if (block.layout === 'chart') {
       merged.push(block)
       continue
     }
@@ -4811,6 +5395,10 @@ function renderReportMetadata(table: TableBlock): string {
 function renderTable(table: TableBlock): string {
   const columnCount = table.header.length
   const tableRows = table.body.filter((row): row is TableRow => row.kind === 'row')
+  const hierarchyLevels = tableRows.flatMap(row =>
+    row.hierarchyLevel === undefined ? [] : [row.hierarchyLevel])
+  const hierarchyDepth = hierarchyLevels.length > 0 ? Math.max(...hierarchyLevels) + 1 : 1
+  const renderedColumnCount = columnCount + hierarchyDepth - 1
   const trailingColumn = columnCount - 1
   const precedingColumn = trailingColumn - 1
   const trailingNotes = tableRows
@@ -4830,35 +5418,57 @@ function renderTable(table: TableBlock): string {
       header: table.header.slice(0, trailingColumn),
       body: table.body.map(row => row.kind === 'section'
         ? row
-        : { kind: 'row', cells: row.cells.slice(0, trailingColumn) }),
+        : { ...row, cells: row.cells.slice(0, trailingColumn) }),
     }
     const notes = trailingNotes.map(note => `<p>${renderInline(note)}</p>`).join('\n')
     return `<div class="table-with-notes">\n${renderTable(primaryTable)}\n<aside>\n${notes}\n</aside>\n</div>`
   }
   const header = table.header.some(cell => cell.length > 0)
-    ? `<thead>\n${renderTableHeader(table)}\n</thead>\n`
+    ? `<thead>\n${renderTableHeader(table, hierarchyDepth)}\n</thead>\n`
     : ''
-  const inferredTotal = inferUnlabeledTotal(table.body, columnCount)
-  const body = inferredTotal ? table.body.slice(0, -1) : table.body
+  const finalRow = table.body.at(-1)
+  const explicitTotal = finalRow?.kind === 'row'
+    && /^(?:Grand )?Totals?\b/i.test(finalRow.cells[0]?.replaceAll('**', '') ?? '')
+    ? finalRow
+    : undefined
+  const tableTotal = explicitTotal ?? inferUnlabeledTotal(table.body, columnCount)
+  const body = tableTotal ? table.body.slice(0, -1) : table.body
   const rows = body.map((row) => {
     if (row.kind === 'section') {
-      return `<tr class="section"><th colspan="${columnCount}" scope="rowgroup">${renderInline(row.label)}</th></tr>`
+      return `<tr class="section"><th colspan="${renderedColumnCount}" scope="rowgroup">${renderInline(row.label)}</th></tr>`
     }
     const summary = row.cells.some(cell =>
       /^(?:(?:Grand )?Totals?\b|\d{5}-\d{3}\s+TOTAL\b)/i.test(cell.replaceAll('**', '')))
-    const cells = Array.from({ length: columnCount }, (_, columnIndex) => {
-      const value = row.cells[columnIndex] ?? ''
-      const tag = columnIndex === 0 && value.length > 0 ? 'th' : 'td'
-      const scope = tag === 'th' ? ' scope="row"' : ''
-      return `<${tag}${scope}>${renderInline(value)}</${tag}>`
-    })
-    const rowClass = [summary ? 'summary' : '', row.group ? 'group' : '']
+    const cells = hierarchyDepth > 1
+      ? [
+          ...Array.from({ length: hierarchyDepth }, (_, hierarchyLevel) => {
+            if (hierarchyLevel !== (row.hierarchyLevel ?? 0)) {
+              return '<td></td>'
+            }
+            const value = row.cells[0] ?? ''
+            return value
+              ? `<th scope="row">${renderInline(value)}</th>`
+              : '<td></td>'
+          }),
+          ...Array.from({ length: columnCount - 1 }, (_, metricIndex) =>
+            `<td>${renderInline(row.cells[metricIndex + 1] ?? '')}</td>`),
+        ]
+      : Array.from({ length: columnCount }, (_, columnIndex) => {
+          const value = row.cells[columnIndex] ?? ''
+          const tag = columnIndex === 0 && value.length > 0 ? 'th' : 'td'
+          const scope = tag === 'th' ? ' scope="row"' : ''
+          return `<${tag}${scope}>${renderInline(value)}</${tag}>`
+        })
+    const subgroup = row.hierarchyLevel !== undefined
+      && row.hierarchyLevel > 0
+      && row.hierarchyLevel < hierarchyDepth - 1
+    const rowClass = [summary ? 'summary' : '', row.group ? 'group' : '', subgroup ? 'subgroup' : '']
       .filter(Boolean)
       .join(' ')
     return `<tr${rowClass ? ` class="${rowClass}"` : ''}>${cells.join('')}</tr>`
   }).join('\n')
-  const footer = inferredTotal
-    ? `\n<tfoot>\n${renderInferredTotal(inferredTotal, columnCount)}\n</tfoot>`
+  const footer = tableTotal
+    ? `\n<tfoot>\n${renderTableTotal(tableTotal, columnCount, hierarchyDepth)}\n</tfoot>`
     : ''
   return `<table>\n${header}<tbody>\n${rows}\n</tbody>${footer}\n</table>`
 }
@@ -4903,15 +5513,29 @@ function parseFinancialValue(cell: string): number | undefined {
   return value.startsWith('(') ? -magnitude : magnitude
 }
 
-function renderInferredTotal(row: TableRow, columnCount: number): string {
-  const values = Array.from({ length: columnCount }, (_, columnIndex) => {
-    const value = row.cells[columnIndex] ?? ''
-    return `<td>${renderInline(value)}</td>`
+function renderTableTotal(
+  row: TableRow,
+  columnCount: number,
+  hierarchyDepth: number,
+): string {
+  const firstValue = row.cells[0] ?? ''
+  const hierarchyCells = Array.from({ length: hierarchyDepth }, (_, hierarchyLevel) => {
+    if (hierarchyLevel !== (row.hierarchyLevel ?? 0)) {
+      return '<td></td>'
+    }
+    return firstValue
+      ? `<th scope="row">${renderInline(firstValue)}</th>`
+      : '<td></td>'
   })
+  const values = [
+    ...hierarchyCells,
+    ...Array.from({ length: columnCount - 1 }, (_, metricIndex) =>
+      `<td>${renderInline(row.cells[metricIndex + 1] ?? '')}</td>`),
+  ]
   return `<tr class="summary">${values.join('')}</tr>`
 }
 
-function renderTableHeader(table: TableBlock): string {
+function renderTableHeader(table: TableBlock, hierarchyDepth = 1): string {
   const { header } = table
   const anchoredGroups = table.columnGroups ?? inferAnchoredColumnGroups(header)
   if (anchoredGroups.length > 1) {
@@ -4929,6 +5553,14 @@ function renderTableHeader(table: TableBlock): string {
     }
     const columnRow = header.map(cell => `<th scope="col">${renderInline(cell)}</th>`).join('')
     return `<tr>${groupRow.join('')}</tr>\n<tr>${columnRow}</tr>`
+  }
+
+  if (hierarchyDepth > 1) {
+    const hierarchyHeader = `<th colspan="${hierarchyDepth}" scope="col">${renderInline(header[0] ?? '')}</th>`
+    const metricHeaders = header.slice(1)
+      .map(cell => `<th scope="col">${renderInline(cell)}</th>`)
+      .join('')
+    return `<tr>${hierarchyHeader}${metricHeaders}</tr>`
   }
 
   return `<tr>${header.map(cell => `<th scope="col">${renderInline(cell)}</th>`).join('')}</tr>`

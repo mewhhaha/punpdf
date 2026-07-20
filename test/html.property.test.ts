@@ -624,6 +624,96 @@ describe('html extraction properties', () => {
     expect(html[0]).toContain('<tr class="section"><th colspan="8" scope="rowgroup">1-1</th></tr>')
   })
 
+  it('removes a detached label strip when the following table preserves the same groups', async () => {
+    const groupLabels = ['Rent comparison', 'Current rents', 'Prior rents', 'Historical rents']
+    const groupStarts = [30, 165, 300, 435]
+    const starts = [30, 95, 165, 230, 300, 365, 435, 500]
+    const { html } = await extractHTML(authorPdf([
+      ...tableRuns([
+        groupLabels,
+        ['Report date: 6/15/2026', '', '', ''],
+      ], { size: 4, starts: groupStarts, top: 830 }),
+      ...tableRuns([
+        ['Total', '', 'Total', '', 'Total', '', 'Total', ''],
+        ['Rent comparison', 'Units', 'Current rents', 'Value', 'Prior rents', 'Value', 'Historical rents', 'Value'],
+        ['Subject', '281', '$1,700', '$1,900', '$1,690', '$1,890', '$1,680', '$1,880'],
+        ['Average', '245', '$1,600', '$1,800', '$1,590', '$1,790', '$1,580', '$1,780'],
+        ['Competitor', '250', '$1,500', '$1,700', '$1,490', '$1,690', '$1,480', '$1,680'],
+      ], { size: 2, starts, top: 805 }),
+    ]))
+
+    expect(html[0]!.match(/<table>/g)).toHaveLength(1)
+    expect(html[0]).toContain('<p>Report date: 6/15/2026</p>')
+    expect(html[0]).toContain('<th colspan="2" scope="colgroup">Rent comparison</th>')
+    expect(html[0]).toContain('<th colspan="2" scope="colgroup">Current rents</th>')
+    expect(html[0]).toContain('<th colspan="2" scope="colgroup">Prior rents</th>')
+    expect(html[0]).toContain('<th colspan="2" scope="colgroup">Historical rents</th>')
+  })
+
+  it('structures three stable indentation levels without changing their labels or values', async () => {
+    const metricHeaders = ['Floor', 'Sqft', 'Rent', 'Effective Rent', 'Rent PSF', 'Effective PSF', 'Concession', 'Days', 'Leases']
+    const metricStarts = [160, 205, 250, 305, 370, 420, 470, 515, 555]
+    const records: Array<{ label: string, level: number, values: string[] }> = []
+    let recordIndex = 0
+    const nextMetricValues = () => {
+      recordIndex++
+      return [
+        String(recordIndex % 3 + 1),
+        String(800 + recordIndex),
+        `$${1_500 + recordIndex}`,
+        `$${1_450 + recordIndex}`,
+        `$${(1.5 + recordIndex / 100).toFixed(2)}`,
+        `$${(1.4 + recordIndex / 100).toFixed(2)}`,
+        `${recordIndex}.0%`,
+        String(40 + recordIndex),
+        String(10 + recordIndex),
+      ]
+    }
+    for (let propertyIndex = 1; propertyIndex <= 2; propertyIndex++) {
+      records.push({ label: `Property ${propertyIndex}`, level: 0, values: nextMetricValues() })
+      for (let bedroomIndex = 1; bedroomIndex <= 2; bedroomIndex++) {
+        records.push({ label: `${bedroomIndex} Bedroom`, level: 1, values: nextMetricValues() })
+        for (let planIndex = 1; planIndex <= 4; planIndex++) {
+          records.push({
+            label: `Plan ${propertyIndex}-${bedroomIndex}-${planIndex}`,
+            level: 2,
+            values: nextMetricValues(),
+          })
+        }
+      }
+    }
+    records.push({ label: 'Grand Total', level: 0, values: nextMetricValues() })
+    const runs = [
+      ...tableRuns([
+        ['Floorplan Data', ...metricHeaders],
+      ], { size: 3, starts: [30, ...metricStarts], top: 810 }),
+      ...records.flatMap((record, rowIndex) => [
+        { text: record.label, x: [30, 55, 80][record.level]!, y: 805 - rowIndex * 4, size: 3 },
+        ...record.values.map((value, columnIndex) => ({
+          text: value,
+          x: metricStarts[columnIndex]!,
+          y: 805 - rowIndex * 4,
+          size: 3,
+        })),
+      ]),
+    ]
+    const { html } = await extractHTML(authorPdf(runs))
+    const rows = htmlRows(html[0]!)
+
+    expect(html[0]).toContain('<th colspan="3" scope="col">Floorplan Data</th>')
+    expect(rows.find(row => htmlCells(row).includes('Property 1'))).toContain('class="group"')
+    expect(rows.find(row => htmlCells(row).includes('1 Bedroom'))).toContain('class="subgroup"')
+    expect(htmlCells(rows.find(row => htmlCells(row).includes('Property 1'))!).slice(0, 3))
+      .toEqual(['Property 1', '', ''])
+    expect(htmlCells(rows.find(row => htmlCells(row).includes('1 Bedroom'))!).slice(0, 3))
+      .toEqual(['', '1 Bedroom', ''])
+    expect(htmlCells(rows.find(row => htmlCells(row).includes('Plan 1-1-1'))!).slice(0, 3))
+      .toEqual(['', '', 'Plan 1-1-1'])
+    expect(html[0]).toContain('<tfoot>')
+    expect(htmlCells(rows.at(-1)!).slice(0, 3)).toEqual(['Grand Total', '', ''])
+    expect(htmlText(html[0]!)).not.toContain('All floor plans')
+  })
+
   it('preserves grouped advertising headers and their column annotations', async () => {
     const starts = [
       15,
@@ -2038,6 +2128,99 @@ describe('html extraction properties', () => {
     expect(htmlText(html[0]!)).toContain('Property Name\nAllaso High Desert\nBeds')
     expect(htmlRows(html[0]!).map(htmlCells)).toContainEqual(['Property', 'Beds', 'Baths', 'Units', 'Rent', 'NER'])
     expect(htmlRows(html[0]!).map(htmlCells).flat()).not.toContain('Property Name')
+  })
+
+  it('converts repeated sparse chart panels without inventing plotted values', async () => {
+    const chartRuns: AuthoredRun[] = [
+      { text: 'Portfolio Chart Report', x: 30, y: 820, size: 7 },
+      { text: 'North', x: 120, y: 700, size: 12 },
+      { text: 'South', x: 390, y: 700, size: 12 },
+      { text: 'West', x: 120, y: 500, size: 12 },
+      { text: 'Quoted', x: 105, y: 680, size: 4 },
+      { text: 'Signed', x: 145, y: 680, size: 4 },
+      { text: 'Quoted', x: 375, y: 680, size: 4 },
+      { text: 'Signed', x: 415, y: 680, size: 4 },
+      { text: 'Quoted', x: 105, y: 480, size: 4 },
+      { text: 'Signed', x: 145, y: 480, size: 4 },
+      { text: 'Alpha', x: 55, y: 540, size: 4 },
+      { text: 'Beta', x: 120, y: 540, size: 4 },
+      { text: 'Gamma', x: 185, y: 540, size: 4 },
+      { text: 'Delta', x: 325, y: 540, size: 4 },
+      { text: 'Epsilon', x: 390, y: 540, size: 4 },
+      { text: 'Zeta', x: 455, y: 540, size: 4 },
+      { text: 'Eta', x: 55, y: 420, size: 4 },
+      { text: 'Theta', x: 120, y: 420, size: 4 },
+      { text: 'Iota', x: 185, y: 420, size: 4 },
+      ...Array.from({ length: 8 }, (_, index) => ({
+        text: `caption ${index + 1}`,
+        x: 30 + index * 45,
+        y: 300,
+        size: 4,
+      })),
+    ]
+    const { html } = await extractHTML(authorPdf(chartRuns))
+    const rows = htmlRows(html[0]!).map(htmlCells)
+
+    expect(html[0]!.match(/<table>/g)).toHaveLength(3)
+    expect(html[0]).toContain('<h2>North</h2>')
+    expect(html[0]).toContain('<h2>South</h2>')
+    expect(html[0]).toContain('<h2>West</h2>')
+    expect(rows).toContainEqual(['Category', 'Quoted', 'Signed'])
+    expect(rows).toContainEqual(['Alpha', '', ''])
+    expect(rows).toContainEqual(['Zeta', '', ''])
+  })
+
+  it('converts a dashboard summary and each positioned chart into tables', async () => {
+    const chartTitles = [
+      ['Quoted vs Signed Rent by Region', 50, 700],
+      ['Lease Count by Calendar Month', 350, 700],
+      ['Average Rent by Floor Plan', 50, 560],
+      ['Market Time by Calendar Month', 350, 560],
+      ['Available Homes by Portfolio Region', 50, 420],
+      ['Average Concession by Portfolio Region', 350, 420],
+    ] as const
+    const chartRuns: AuthoredRun[] = [
+      { text: 'Leasing Dashboard', x: 30, y: 820, size: 8 },
+      { text: 'Note: Chart tables contain only labels and values exposed by the source document.', x: 30, y: 790, size: 4 },
+      ...['Area', 'Rent', 'Effective Rent', 'Days', 'Leases'].map((text, index) => ({
+        text,
+        x: 70 + index * 90,
+        y: 760,
+        size: 4,
+      })),
+      ...['950', '$1,800', '$1,750', '42', '18'].map((text, index) => ({
+        text,
+        x: 70 + index * 90,
+        y: 744,
+        size: 4,
+      })),
+      ...chartTitles.map(([text, x, y]) => ({ text, x, y, size: 7 })),
+    ]
+    for (const [title, titleX, titleY] of chartTitles) {
+      const leftPanel = titleX < 200
+      const categoryY = titleY - 115
+      const valueY = titleY - 70
+      const categoryStarts = leftPanel ? [55, 120, 185] : [345, 410, 475]
+      const pairedSeries = title.includes(' vs ')
+      for (const [categoryIndex, x] of categoryStarts.entries()) {
+        chartRuns.push({ text: `Region ${categoryIndex + 1}`, x, y: categoryY, size: 4 })
+        chartRuns.push({ text: String(10 + categoryIndex), x, y: valueY, size: 4 })
+        if (pairedSeries) {
+          chartRuns.push({ text: String(20 + categoryIndex), x: x + 8, y: valueY, size: 4 })
+        }
+      }
+    }
+    const { html } = await extractHTML(authorPdf(chartRuns))
+    const rows = htmlRows(html[0]!).map(htmlCells)
+
+    expect(html[0]!.match(/<table>/g)).toHaveLength(7)
+    expect(rows).toContainEqual(['Area', 'Rent', 'Effective Rent', 'Days', 'Leases'])
+    expect(rows).toContainEqual(['950', '$1,800', '$1,750', '42', '18'])
+    expect(rows).toContainEqual(['Category', 'Quoted', 'Signed Rent'])
+    expect(rows).toContainEqual(['Region 1', '10', '20'])
+    for (const [title] of chartTitles) {
+      expect(html[0]).toContain(`<h2>${title}</h2>`)
+    }
   })
 
   it('reconstructs a filtered matrix with grouped metric bands', async () => {
