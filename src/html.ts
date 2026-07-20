@@ -206,6 +206,12 @@ export async function extractHTML(
         && matchingItems.every(item =>
           item.y <= bottomPageBaseline + (topPageBaseline - bottomPageBaseline) * 0.08)
     }
+    lines = lines.filter((line) => {
+      const values = line.split('\t').map(value => value.trim()).filter(Boolean)
+      return values.length !== 1
+        || !/^\d+\/\d+$/.test(values[0]!)
+        || !isPageFooterText(values[0]!)
+    })
     const rawTableRunCount = lines.reduce((count, line, sourceLineIndex) =>
       count + Number(line.includes('\t') && !(lines[sourceLineIndex - 1] ?? '').includes('\t')), 0)
     const maximumRawColumnCount = Math.max(
@@ -396,12 +402,16 @@ export async function extractHTML(
       || hasFragmentedParallelNarrative
       || hasSparseCompoundGrid
       || hasFragmentedDirectory
-    if (needsPositionedText) {
+    const chartTables = renderChartTables(pageItems)
+    if (chartTables) {
+      const firstRow = lines[0]!.split('\t').map(value => value.trim()).filter(Boolean)
+      const title = firstRow[0]
+      const metadata = firstRow.slice(1)
       return [
-        ':::spatial',
-        ...renderPositionedTextLines(pageItems, medianPageFontSize),
-        ':::',
-      ].join('\n')
+        ...(title ? [`# ${title}`, ''] : []),
+        ...(metadata.length > 0 ? [metadata.join(' '), ''] : []),
+        ...chartTables,
+      ].join('\n').trim()
     }
     if (hasDenseSpatialCharts) {
       const firstRow = lines[0]!.split('\t').map(value => value.trim()).filter(Boolean)
@@ -414,6 +424,13 @@ export async function extractHTML(
         ...lines.slice(1),
         ':::',
       ].join('\n').trim()
+    }
+    if (needsPositionedText) {
+      return [
+        ':::spatial',
+        ...renderPositionedTextLines(pageItems, medianPageFontSize),
+        ':::',
+      ].join('\n')
     }
     const numericMatrixItems = pageItems.filter(item =>
       /^[+\-]?\$?\(?\d[\d,.]*\)?%?$/.test(item.str))
@@ -1863,9 +1880,312 @@ export async function extractHTML(
   }
 }
 
+interface PositionedTextLine {
+  y: number
+  items: StructuredTextItem[]
+}
+
+interface ChartSeries {
+  label: string
+  start: number
+  values: StructuredTextItem[]
+}
+
+function renderChartTables(positionedText: StructuredTextItem[]): string[] | undefined {
+  const visibleText = positionedText.filter(textRun => textRun.str.trim().length > 0)
+  const lines: PositionedTextLine[] = []
+  for (const textRun of [...visibleText].sort((left, right) => right.y - left.y || left.x - right.x)) {
+    const line = lines.find(candidate =>
+      Math.abs(candidate.y - textRun.y) <= Math.max(1, textRun.fontSize * 0.35))
+    if (line) {
+      line.items.push(textRun)
+    }
+    else {
+      lines.push({ y: textRun.y, items: [textRun] })
+    }
+  }
+  for (const line of lines) {
+    line.items.sort((left, right) => left.x - right.x)
+  }
+
+  const numericValue = (value: string) =>
+    /^[+\-]?\$?\d[\d,.]*%?$/.test(value.trim())
+  const summaryHeader = lines.find((line) => {
+    const labels = line.items.filter(item => !numericValue(item.str))
+    return labels.length >= 5
+      && labels.length === line.items.length
+      && labels.every(item => item.str.length <= 50)
+      && lines.filter(candidate =>
+        candidate.y < line.y
+        && line.y - candidate.y <= itemMedianFontSize(line.items) * 8
+        && candidate.items.filter(item => numericValue(item.str)).length >= labels.length)
+        .length >= 2
+  })
+  if (!summaryHeader) {
+    return undefined
+  }
+
+  const summaryColumns = summaryHeader.items
+  const summaryRows = lines
+    .filter(line =>
+      line.y < summaryHeader.y
+      && summaryHeader.y - line.y <= itemMedianFontSize(summaryHeader.items) * 10
+      && line.items.filter(item => numericValue(item.str)).length >= summaryColumns.length)
+    .sort((left, right) => right.y - left.y)
+  if (summaryRows.length < 2) {
+    return undefined
+  }
+  const summaryBody = summaryRows.map((line) => {
+    const label = line.items
+      .filter(item => !numericValue(item.str) && item.x < summaryColumns[0]!.x)
+      .map(item => item.str)
+      .join(' ')
+    const values = summaryColumns.map(column => line.items
+      .filter(item => numericValue(item.str))
+      .sort((left, right) =>
+        Math.abs(left.x + left.width / 2 - column.x - column.width / 2)
+        - Math.abs(right.x + right.width / 2 - column.x - column.width / 2))[0]
+      ?.str ?? '')
+    return [label, ...values]
+  })
+  const summaryBottom = Math.min(...summaryRows.map(line => line.y))
+  const summaryAnnotations = lines.find(line =>
+    line.y < summaryBottom
+    && summaryBottom - line.y <= itemMedianFontSize(summaryColumns) * 2
+    && line.items.length === summaryColumns.length
+    && line.items.every(item => !numericValue(item.str)))
+  if (summaryAnnotations) {
+    for (const [columnIndex, column] of summaryColumns.entries()) {
+      const annotation = summaryAnnotations.items
+        .sort((left, right) =>
+          Math.abs(left.x + left.width / 2 - column.x - column.width / 2)
+          - Math.abs(right.x + right.width / 2 - column.x - column.width / 2))[0]
+      if (annotation) {
+        summaryBody.at(-1)![columnIndex + 1]
+          = `${summaryBody.at(-1)![columnIndex + 1]}<br>${annotation.str}`
+      }
+    }
+  }
+
+  const seriesLines = lines
+    .filter(line =>
+      line.y < summaryBottom - itemMedianFontSize(summaryColumns) * 8
+      && line.items.filter(item => numericValue(item.str)).length >= 6
+      && line.items.some(item => !numericValue(item.str)))
+    .sort((left, right) => right.y - left.y)
+  const seriesByStart = new Map<number, ChartSeries[]>()
+  for (const line of seriesLines) {
+    let currentSeries: ChartSeries | undefined
+    for (const item of line.items) {
+      if (!numericValue(item.str)) {
+        currentSeries = { label: item.str, start: item.x, values: [] }
+        const existingStart = [...seriesByStart.keys()]
+          .sort((left, right) => Math.abs(left - item.x) - Math.abs(right - item.x))[0]
+        const start = existingStart !== undefined
+          && Math.abs(existingStart - item.x) <= item.fontSize * 5
+          ? existingStart
+          : item.x
+        const series = seriesByStart.get(start) ?? []
+        series.push(currentSeries)
+        seriesByStart.set(start, series)
+      }
+      else if (currentSeries) {
+        currentSeries.values.push(item)
+      }
+    }
+  }
+  const numericCharts = [...seriesByStart.entries()]
+    .filter(([, series]) => series.length >= 2 && series.every(entry => entry.values.length >= 3))
+    .sort((left, right) => left[0] - right[0])
+  if (numericCharts.length < 2) {
+    return undefined
+  }
+
+  const chartTables = numericCharts.map(([start, series], chartIndex) => {
+    const end = numericCharts[chartIndex + 1]?.[0] ?? Infinity
+    const topSeriesBaseline = Math.max(...series.map(entry =>
+      entry.values[0]?.y ?? -Infinity))
+    const categoryItems = visibleText.filter(item =>
+      item.x >= start
+      && item.x < end
+      && item.y > topSeriesBaseline
+      && item.y - topSeriesBaseline <= item.fontSize * 5
+      && !numericValue(item.str)
+      && !series.some(entry => entry.label === item.str))
+    const valueCenters = series[0]!.values.map(value => value.x + value.width / 2)
+    const categories = valueCenters.map((center, categoryIndex) => {
+      return categoryItems
+        .filter((item) => {
+          const itemCenter = item.x + item.width / 2
+          const nearestCategory = valueCenters
+            .map((valueCenter, valueIndex) => ({
+              valueIndex,
+              distance: Math.abs(valueCenter - itemCenter),
+            }))
+            .sort((left, right) => left.distance - right.distance)[0]
+          return nearestCategory?.valueIndex === categoryIndex
+            && nearestCategory.distance <= Math.max(25, item.fontSize * 8)
+        })
+        .sort((left, right) => right.y - left.y || left.x - right.x)
+        .map(item => item.str)
+        .join(' ')
+    })
+    const headingStart = chartIndex === 0
+      ? 0
+      : (numericCharts[chartIndex - 1]![0] + start) / 2
+    const headingEnd = numericCharts[chartIndex + 1] === undefined
+      ? Infinity
+      : (start + numericCharts[chartIndex + 1]![0]) / 2
+    const heading = chartHeading(
+      visibleText,
+      headingStart,
+      headingEnd,
+      Math.max(...categoryItems.map(item => item.y), topSeriesBaseline),
+      summaryBottom - itemMedianFontSize(summaryColumns),
+    )
+    return {
+      heading,
+      header: ['Category', ...series.map(entry => entry.label)],
+      rows: categories.map((category, categoryIndex) => [
+        category,
+        ...series.map(entry => entry.values[categoryIndex]?.str ?? ''),
+      ]),
+    }
+  })
+
+  const legendLines = lines.filter(line =>
+    line.y < Math.min(...seriesLines.map(candidate => candidate.y))
+    && line.items.length >= 2
+    && line.items.length <= 6
+    && line.items.every(item => !numericValue(item.str) && item.str.length <= 30))
+  const legendGroups = legendLines.flatMap((line) => {
+    const groups: StructuredTextItem[][] = []
+    for (const item of line.items) {
+      const group = groups.at(-1)
+      if (!group || item.x - (group.at(-1)!.x + group.at(-1)!.width) > item.fontSize * 8) {
+        groups.push([item])
+      }
+      else {
+        group.push(item)
+      }
+    }
+    return groups.filter(group => group.length >= 2)
+  })
+  const knownCategories = chartTables.flatMap(chart => chart.rows.map(row => row[0]!))
+  const compactCategory = (category: string) => category.toLowerCase().replaceAll(/[^a-z0-9]/g, '')
+  const categoricalCharts = legendGroups.map((legend, chartIndex) => {
+    const start = Math.max(0, legend[0]!.x - legend[0]!.fontSize * 20)
+    const nextLegendStart = legendGroups[chartIndex + 1]?.[0]?.x
+    const end = nextLegendStart === undefined ? Infinity : (legend.at(-1)!.x + nextLegendStart) / 2
+    const categoryBand = visibleText.filter(item =>
+      item.x >= start
+      && item.x < end
+      && item.y < legend[0]!.y - item.fontSize * 4
+      && item.y > Math.max(0, legend[0]!.y - item.fontSize * 25)
+      && !numericValue(item.str))
+    const categoryLines = groupPositionedLines(categoryBand)
+    const densestCategoryLines = categoryLines
+      .sort((left, right) => right.items.length - left.items.length)
+      .slice(0, 2)
+    const categoryAnchors = densestCategoryLines[0]?.items ?? []
+    const categories = categoryAnchors.map((anchor) => {
+      const extractedCategory = densestCategoryLines
+        .flatMap(line => line.items)
+        .filter(item =>
+          Math.abs(item.x + item.width / 2 - anchor.x - anchor.width / 2)
+          <= Math.max(20, item.fontSize * 8))
+        .sort((left, right) => right.y - left.y || left.x - right.x)
+        .map(item => item.str)
+        .join(' ')
+      return knownCategories.find(category =>
+        compactCategory(category) === compactCategory(extractedCategory))
+      ?? extractedCategory
+    })
+    const heading = chartHeading(
+      visibleText,
+      start,
+      end,
+      legend[0]!.y,
+      Math.min(...seriesLines.map(line => line.y)) - itemMedianFontSize(legend),
+    )
+    return {
+      heading,
+      header: [`Category (${heading ?? chartIndex + 1})`, ...legend.map(item => item.str)],
+      rows: categories.map(category => [category, ...legend.map(() => '')]),
+    }
+  }).filter(chart => chart.rows.length >= 2)
+  if (categoricalCharts.length < 2) {
+    return undefined
+  }
+
+  const sectionHeading = visibleText
+    .filter(item =>
+      item.y > summaryHeader.y
+      && item.fontSize > itemMedianFontSize(summaryHeader.items) * 1.2
+      && item.str.length <= 100)
+    .sort((left, right) => right.fontSize - left.fontSize || left.y - right.y)[0]
+  const tables = [
+    {
+      heading: sectionHeading?.str,
+      header: ['Category', ...summaryColumns.map(column => column.str)],
+      rows: summaryBody,
+    },
+    ...chartTables,
+    ...categoricalCharts.slice(0, 2),
+  ]
+  return tables.flatMap((table, tableIndex) => [
+    ...(table.heading ? [`${tableIndex === 0 ? '##' : '###'} ${table.heading}`, ''] : []),
+    renderStructuredRow(table.header),
+    renderStructuredRow(table.header.map(() => '---')),
+    ...table.rows.map(renderStructuredRow),
+    '',
+  ])
+}
+
+function itemMedianFontSize(items: StructuredTextItem[]): number {
+  const sizes = items.map(item => item.fontSize).sort((left, right) => left - right)
+  return sizes[Math.floor(sizes.length / 2)] ?? 1
+}
+
+function groupPositionedLines(items: StructuredTextItem[]): PositionedTextLine[] {
+  const lines: PositionedTextLine[] = []
+  for (const item of [...items].sort((left, right) => right.y - left.y || left.x - right.x)) {
+    const line = lines.find(candidate => Math.abs(candidate.y - item.y) <= item.fontSize * 0.5)
+    if (line) {
+      line.items.push(item)
+    }
+    else {
+      lines.push({ y: item.y, items: [item] })
+    }
+  }
+  return lines
+}
+
+function chartHeading(
+  positionedText: StructuredTextItem[],
+  start: number,
+  end: number,
+  contentTop: number,
+  headingCeiling: number,
+): string | undefined {
+  return positionedText
+    .filter(item =>
+      item.x >= start
+      && item.x < end
+      && item.y > contentTop
+      && item.y < headingCeiling
+      && item.y - contentTop <= item.fontSize * 30
+      && item.fontSize >= 8
+      && /\p{L}/u.test(item.str)
+      && item.str.length <= 80)
+    .sort((left, right) => right.y - left.y || right.fontSize - left.fontSize)[0]
+    ?.str
+}
+
 interface TableRow {
   kind: 'row'
   cells: string[]
+  group?: boolean
 }
 
 interface TableSectionRow {
@@ -1877,6 +2197,14 @@ interface TableBlock {
   kind: 'table'
   header: string[]
   body: Array<TableRow | TableSectionRow>
+  columnGroups?: ColumnGroup[]
+  columnAnchors?: number[]
+}
+
+interface ColumnGroup {
+  start: number
+  end: number
+  label: string
 }
 
 interface ParallelTablesBlock {
@@ -2040,9 +2368,23 @@ function renderPageArticle(
   positionedText: StructuredTextItem[],
   pageImage?: string,
 ): string {
-  const blocks = repairJoinedTableCells(mergeTableSections(enrichTableHeaders(
+  const positionedMatrix = reconstructPositionedMatrixWithFilters(positionedText)
+  if (positionedMatrix) {
+    const preservedLayout = pageImage
+      ? `<figure class="pdf-page-render"><img alt="" src="${pageImage}"></figure>\n`
+      : ''
+    return `<article class="pdf-page" data-page-number="${pageNumber}">\n${preservedLayout}${positionedMatrix}\n</article>`
+  }
+  const mergedBlocks = mergeTableSections(enrichTableHeaders(
     splitParallelTables(attachTrailingCellContinuations(parsePageBlocks(page))),
-  ), positionedText), positionedText).filter((block) => {
+  ), positionedText)
+  const repairedBlocks = repairJoinedTableCells(
+    enrichTypedCategoryTables(
+      enrichAdvertisingSourceTable(mergedBlocks, positionedText),
+    ),
+    positionedText,
+  )
+  const blocks = enrichPositionedTableLayout(repairedBlocks, positionedText).filter((block) => {
     if (block.kind !== 'table' || block.header.some(Boolean) || block.body.length !== 1) {
       return true
     }
@@ -2059,6 +2401,968 @@ function renderPageArticle(
     ? `<figure class="pdf-page-render"><img alt="" src="${pageImage}"></figure>\n`
     : ''
   return `<article class="pdf-page" data-page-number="${pageNumber}">\n${preservedLayout}${content}\n</article>`
+}
+
+function reconstructPositionedMatrixWithFilters(
+  positionedText: StructuredTextItem[],
+): string | undefined {
+  const visibleText = positionedText.filter(item => item.str.trim())
+  const positionedLines = groupPositionedLines(visibleText)
+  const leafHeaderLine = positionedLines
+    .filter(line =>
+      line.items.length >= 20
+      && line.items.filter(item => /[\p{L}$%△#]/u.test(item.str)).length
+      >= Math.ceil(line.items.length * 0.8))
+    .sort((left, right) => right.y - left.y || right.items.length - left.items.length)[0]
+  if (!leafHeaderLine) {
+    return undefined
+  }
+
+  const medianFontSize = itemMedianFontSize(leafHeaderLine.items)
+  const sortedHeaderItems = leafHeaderLine.items.sort((left, right) => left.x - right.x)
+  const tableLeft = sortedHeaderItems[0]!.x
+  const tableRight = Math.max(...sortedHeaderItems.map(item => item.x + item.width))
+  const sidebarItems = visibleText.filter(item =>
+    item.x < tableLeft - medianFontSize * 2
+    && item.y < leafHeaderLine.y - medianFontSize * 0.4)
+  const sidebarColumns: Array<{ x: number, items: StructuredTextItem[] }> = []
+  for (const item of sidebarItems.sort((left, right) => left.x - right.x)) {
+    const column = sidebarColumns.find(candidate =>
+      Math.abs(candidate.x - item.x) <= medianFontSize * 2)
+    if (column) {
+      column.items.push(item)
+      column.x = column.items.reduce((sum, candidate) => sum + candidate.x, 0)
+        / column.items.length
+    }
+    else {
+      sidebarColumns.push({ x: item.x, items: [item] })
+    }
+  }
+  const filters = sidebarColumns.flatMap((column) => {
+    const sortedItems = column.items.sort((left, right) => right.y - left.y)
+    const gaps = sortedItems.slice(1)
+      .map((item, itemIndex) => sortedItems[itemIndex]!.y - item.y)
+      .sort((left, right) => left - right)
+    const medianGap = gaps[Math.floor(gaps.length / 2)] ?? medianFontSize * 2
+    const sections: StructuredTextItem[][] = []
+    for (const item of sortedItems) {
+      const current = sections.at(-1)
+      if (
+        !current
+        || current.at(-1)!.y - item.y > Math.max(medianGap * 2.5, medianFontSize * 5)
+      ) {
+        sections.push([item])
+      }
+      else {
+        current.push(item)
+      }
+    }
+    return sections.flatMap(section =>
+      section.length >= 2 && /\p{L}/u.test(section[0]!.str)
+        ? [{ heading: section[0]!.str, entries: section.slice(1).map(item => item.str) }]
+        : [])
+  })
+  if (filters.length < 2) {
+    return undefined
+  }
+
+  interface HeaderCellGeometry {
+    label: string
+    x: number
+    right: number
+    anchor: number
+  }
+  const headerFragments: HeaderCellGeometry[] = []
+  for (const item of sortedHeaderItems) {
+    const preceding = headerFragments.at(-1)
+    if (
+      preceding
+      && !/\p{L}|\d/u.test(item.str)
+      && item.x - preceding.right <= medianFontSize * 0.2
+    ) {
+      preceding.label = `${preceding.label} ${item.str}`
+      preceding.right = item.x + item.width
+      continue
+    }
+    headerFragments.push({
+      label: item.str,
+      x: item.x,
+      right: item.x + item.width,
+      anchor: item.x,
+    })
+  }
+
+  const bodyItems = visibleText.filter(item =>
+    item.y < leafHeaderLine.y - medianFontSize * 0.4
+    && item.x >= tableLeft - medianFontSize
+    && item.x <= tableRight + medianFontSize * 3)
+  const bodyAnchorClusters: Array<{ x: number, positions: number[] }> = []
+  for (const item of bodyItems.sort((left, right) => left.x - right.x)) {
+    const cluster = bodyAnchorClusters.find(candidate =>
+      Math.abs(candidate.x - item.x) <= medianFontSize * 0.8)
+    if (cluster) {
+      cluster.positions.push(item.x)
+      cluster.x = cluster.positions.reduce((sum, position) => sum + position, 0)
+        / cluster.positions.length
+    }
+    else {
+      bodyAnchorClusters.push({ x: item.x, positions: [item.x] })
+    }
+  }
+  const stableBodyAnchors = bodyAnchorClusters
+    .filter(cluster => cluster.positions.length >= 3)
+    .map(cluster => cluster.x)
+    .sort((left, right) => left - right)
+  const headerCells = headerFragments.flatMap((fragment): HeaderCellGeometry[] => {
+    const fragmentAnchors = stableBodyAnchors.filter(anchor =>
+      anchor >= fragment.x - medianFontSize
+      && anchor <= fragment.right + medianFontSize)
+    const separatedAnchors = fragmentAnchors.filter((anchor, anchorIndex) =>
+      anchorIndex === 0 || anchor - fragmentAnchors[anchorIndex - 1]! > medianFontSize * 2)
+    if (separatedAnchors.length <= 1) {
+      return [{ ...fragment, anchor: fragmentAnchors[0] ?? fragment.x }]
+    }
+    const words = fragment.label.split(/\s+/)
+    if (words.length < separatedAnchors.length) {
+      return [{ ...fragment, anchor: fragmentAnchors[0] ?? fragment.x }]
+    }
+    return separatedAnchors.map((anchor, anchorIndex) => {
+      const wordStart = Math.round(anchorIndex * words.length / separatedAnchors.length)
+      const wordEnd = Math.round((anchorIndex + 1) * words.length / separatedAnchors.length)
+      const followingAnchor = separatedAnchors[anchorIndex + 1]
+      return {
+        label: words.slice(wordStart, wordEnd).join(' '),
+        x: anchor,
+        right: followingAnchor ?? fragment.right,
+        anchor,
+      }
+    })
+  })
+  if (headerCells.length < 20) {
+    return undefined
+  }
+
+  const groupTitleLine = positionedLines
+    .filter(line =>
+      line.y > leafHeaderLine.y + medianFontSize * 0.4
+      && line.y - leafHeaderLine.y <= medianFontSize * 3
+      && line.items.length >= 3
+      && line.items.some(item => /\p{L}/u.test(item.str)))
+    .sort((left, right) => left.y - right.y)[0]
+  if (!groupTitleLine) {
+    return undefined
+  }
+  const groupTitleItems = visibleText
+    .filter(item => Math.abs(item.y - groupTitleLine.y) <= medianFontSize)
+    .sort((left, right) => left.x - right.x)
+  const groupTitles: Array<{ label: string, x: number, right: number }> = []
+  for (let itemIndex = 0; itemIndex < groupTitleItems.length; itemIndex++) {
+    const item = groupTitleItems[itemIndex]!
+    const following = groupTitleItems[itemIndex + 1]
+    if (
+      following
+      && !/\p{L}/u.test(item.str)
+      && /\p{L}/u.test(following.str)
+      && following.x - (item.x + item.width) <= medianFontSize * 5
+    ) {
+      const label = following.str.startsWith(`${item.str}-`)
+        ? following.str
+        : `${item.str} ${following.str}`
+      groupTitles.push({
+        label,
+        x: item.x,
+        right: following.x + following.width,
+      })
+      itemIndex++
+      continue
+    }
+    if (/\p{L}/u.test(item.str)) {
+      groupTitles.push({ label: item.str, x: item.x, right: item.x + item.width })
+    }
+  }
+  if (groupTitles.length < 3) {
+    return undefined
+  }
+  const groupBoundaries = groupTitles.slice(1).map((title, titleIndex) =>
+    (groupTitles[titleIndex]!.right + title.x) / 2)
+  const firstGroupStart = headerCells
+    .map((cell, columnIndex) => ({
+      columnIndex,
+      distance: Math.abs(cell.anchor - groupTitles[0]!.x),
+    }))
+    .sort((left, right) => left.distance - right.distance)[0]!
+    .columnIndex
+  const groupStarts = [
+    firstGroupStart,
+    ...groupBoundaries.map(boundary => headerCells.findIndex(cell =>
+      (cell.x + cell.right) / 2 >= boundary)),
+  ]
+  if (groupStarts.some(start => start < 0)) {
+    return undefined
+  }
+  const columnGroups = groupTitles.map((title, groupIndex) => ({
+    start: groupStarts[groupIndex]!,
+    end: groupStarts[groupIndex + 1] ?? headerCells.length,
+    label: title.label,
+  }))
+  if (columnGroups.some(group => group.end <= group.start)) {
+    return undefined
+  }
+
+  const body = positionedLines
+    .filter(line => line.y < leafHeaderLine.y - medianFontSize * 0.4)
+    .flatMap((line): TableRow[] => {
+      const rowItems = line.items.filter(item =>
+        item.x >= tableLeft - medianFontSize
+        && item.x <= tableRight + medianFontSize * 3)
+      const cells = Array.from<string>({ length: headerCells.length }).fill('')
+      for (const item of rowItems.sort((left, right) => left.x - right.x)) {
+        const column = headerCells
+          .map((cell, columnIndex) => ({
+            columnIndex,
+            distance: Math.abs(cell.anchor - item.x),
+          }))
+          .sort((left, right) => left.distance - right.distance)[0]!
+        cells[column.columnIndex] = [cells[column.columnIndex], item.str]
+          .filter(Boolean)
+          .join(' ')
+      }
+      return cells.filter(Boolean).length >= 3 ? [{ kind: 'row', cells }] : []
+    })
+  if (body.length < 20) {
+    return undefined
+  }
+
+  const titleLine = positionedLines
+    .filter(line => line.y > groupTitleLine.y)
+    .flatMap(line => line.items)
+    .filter(item => /\p{L}/u.test(item.str))
+    .sort((left, right) => right.fontSize - left.fontSize || left.x - right.x)[0]
+  const title = titleLine ? `<h1>${renderInline(titleLine.str)}</h1>\n` : ''
+  const topLine = titleLine
+    ? positionedLines.find(line => line.items.includes(titleLine))
+    : undefined
+  const topLineItems = titleLine
+    ? (topLine?.items ?? []).filter(item => item !== titleLine).sort((left, right) => left.x - right.x)
+    : []
+  const metadata = topLineItems.length >= 2
+    ? `<header class="report-metadata">\n<p class="metadata-row"><span>${renderInline(topLineItems[0]!.str)}</span><span>${renderInline(topLineItems.slice(1).map(item => item.str).join(' '))}</span></p>\n</header>\n`
+    : ''
+  const contextLine = positionedLines
+    .filter(line => line.y > groupTitleLine.y && line.y < (titleLine?.y ?? Infinity))
+    .sort((left, right) => left.y - right.y)[0]
+  const note = contextLine?.items
+    .filter(item => item.str.length >= 60)
+    .sort((left, right) => right.str.length - left.str.length)[0]
+  const contextItems = contextLine?.items
+    .filter(item => item !== note && item.str.length <= 40)
+    .sort((left, right) => left.x - right.x) ?? []
+  const context = [
+    ...(note ? [`<p>${renderInline(note.str)}</p>`] : []),
+    ...Array.from({ length: Math.floor(contextItems.length / 2) }, (_, pairIndex) => {
+      const label = contextItems[pairIndex * 2]!.str.replace(/:\s*$/, '')
+      const value = contextItems[pairIndex * 2 + 1]!.str
+      return `<p>${renderInline(`${label}: ${value}`)}</p>`
+    }),
+  ].join('\n')
+  const filterTables = filters.map(filter =>
+    `<table>\n<thead>\n<tr><th scope="col">${renderInline(filter.heading)}</th></tr>\n</thead>\n<tbody>\n${filter.entries.map(entry => `<tr><th scope="row">${renderInline(entry)}</th></tr>`).join('\n')}\n</tbody>\n</table>`)
+    .join('\n')
+  const table: TableBlock = {
+    kind: 'table',
+    header: headerCells.map(cell => cell.label),
+    body,
+    columnGroups,
+    columnAnchors: headerCells.map(cell => cell.anchor),
+  }
+  return `${title}${metadata}${context}\n<div class="matrix-with-filters">\n<aside class="matrix-filters">\n${filterTables}\n</aside>\n<div class="matrix-content">\n${renderTable(table)}\n</div>\n</div>`
+}
+
+function enrichPositionedTableLayout(
+  blocks: PageBlock[],
+  positionedText: StructuredTextItem[],
+): PageBlock[] {
+  const enriched: PageBlock[] = []
+  for (const block of blocks) {
+    if (block.kind !== 'table') {
+      enriched.push(block)
+      continue
+    }
+
+    const bodyRows = block.body.filter((row): row is TableRow => row.kind === 'row')
+    const locatedBodyCells = locateTableCells(bodyRows.map(row => row.cells), positionedText)
+    const columnAnchors = block.header.map((_, columnIndex) => {
+      const positions = locatedBodyCells
+        .filter(cell => cell.cellIndex === columnIndex)
+        .map(cell => cell.x)
+        .sort((left, right) => left - right)
+      return positions[Math.floor(positions.length / 2)]
+    })
+    let table: TableBlock = {
+      ...block,
+      columnAnchors: columnAnchors.every(anchor => anchor !== undefined)
+        ? columnAnchors as number[]
+        : block.columnAnchors,
+    }
+    const detachedContext: PageBlock[] = []
+
+    const firstBodyBaseline = Math.max(
+      -Infinity,
+      ...locatedBodyCells.filter(cell => cell.rowIndex === 0).map(cell => cell.y),
+    )
+    const firstHeaderSegments = table.header[0]?.split('<br>').filter(Boolean) ?? []
+    const currentHeaderTop = Math.max(
+      -Infinity,
+      ...positionedText
+        .filter(item => firstHeaderSegments.includes(item.str) && item.y > firstBodyBaseline)
+        .map(item => item.y),
+    )
+    const medianHeaderFontSize = itemMedianFontSize(positionedText.filter(item =>
+      firstHeaderSegments.includes(item.str) && item.y >= currentHeaderTop - item.fontSize))
+    const leafHeaderLine = groupPositionedLines(positionedText.filter(item =>
+      item.str.trim().length > 0
+      && item.y > firstBodyBaseline
+      && item.y - firstBodyBaseline <= item.fontSize * 4))
+      .filter(line => line.items.length === table.header.length)
+      .sort((left, right) => left.y - right.y)[0]
+    if (leafHeaderLine) {
+      const leafHeader = leafHeaderLine.items
+        .sort((left, right) => left.x - right.x)
+        .map(item => item.str)
+      const currentLeafHeader = table.header.map(cell => cell.split('<br>').at(-1) ?? '')
+      const note = positionedText
+        .filter(item =>
+          item.y > leafHeaderLine.y
+          && item.y - leafHeaderLine.y <= item.fontSize * 5
+          && item.str.length >= 60)
+        .sort((left, right) => left.y - right.y)[0]
+      if (
+        note
+        || leafHeader.some((label, columnIndex) => label !== currentLeafHeader[columnIndex])
+      ) {
+        table = { ...table, header: leafHeader }
+      }
+      if (note) {
+        detachedContext.push({ kind: 'paragraph', lines: [note.str] })
+        const metadataItems = positionedText
+          .filter(item =>
+            item !== note
+            && item.str.trim().length > 0
+            && item.str.length <= 40
+            && Math.abs(item.y - note.y) <= item.fontSize * 0.6
+            && item.x > note.x + note.width)
+          .sort((left, right) => left.x - right.x)
+        if (metadataItems.length === 2) {
+          detachedContext.unshift({
+            kind: 'paragraph',
+            lines: [`${metadataItems[0]!.str}: ${metadataItems[1]!.str}`],
+          })
+        }
+      }
+    }
+    const canReconstructWideHeader = table.header.length >= 8
+      && bodyRows.length >= 3
+      && table.columnAnchors?.length === table.header.length
+      && Number.isFinite(currentHeaderTop)
+    if (canReconstructWideHeader) {
+      const preliminaryHeaderBand = positionedText.filter(item =>
+        item.str.trim().length > 0
+        && item.y > currentHeaderTop + medianHeaderFontSize * 0.4
+        && item.y <= currentHeaderTop + medianHeaderFontSize * 6
+        && item.x >= table.columnAnchors![0]! - medianHeaderFontSize * 2
+        && item.x <= table.columnAnchors!.at(-1)! + medianHeaderFontSize * 12)
+      const firstColumnHeaderTop = Math.max(
+        -Infinity,
+        ...preliminaryHeaderBand
+          .filter((item) => {
+            const center = item.x + item.width / 2
+            return Math.abs(center - table.columnAnchors![0]!)
+              < Math.abs(center - table.columnAnchors![1]!)
+          })
+          .map(item => item.y),
+      )
+      const headerBand = preliminaryHeaderBand.filter(item =>
+        item.y >= firstColumnHeaderTop - medianHeaderFontSize * 1.5)
+      const reconstructedHeader = table.columnAnchors!.map((anchor, columnIndex) => headerBand
+        .filter((item) => {
+          const nearestColumn = table.columnAnchors!
+            .map((candidate, candidateIndex) => ({
+              candidateIndex,
+              distance: Math.abs(candidate - (item.x + item.width / 2)),
+            }))
+            .sort((left, right) => left.distance - right.distance)[0]
+          return nearestColumn?.candidateIndex === columnIndex
+        })
+        .sort((left, right) => right.y - left.y || left.x - right.x)
+        .map(item => item.str)
+        .join('<br>'))
+      const populatedHeaderColumns = reconstructedHeader.filter(Boolean).length
+      if (
+        reconstructedHeader[0]
+        && populatedHeaderColumns >= Math.ceil(table.header.length * 0.6)
+      ) {
+        table = {
+          ...table,
+          header: reconstructedHeader,
+          body: [{ kind: 'row', cells: table.header }, ...table.body],
+        }
+        const preceding = enriched.at(-1)
+        if (
+          preceding?.kind === 'table'
+          && preceding.body.length <= 6
+          && preceding.header.length < table.header.length
+        ) {
+          enriched.pop()
+        }
+      }
+    }
+
+    table = inferRepeatedPositionedColumnGroups(table, positionedText, firstBodyBaseline)
+    table = inferPositionedMetricGroups(table, positionedText, firstBodyBaseline)
+    table = markIndentedTableGroups(table, positionedText)
+    if (detachedContext.length > 0) {
+      enriched.push(...detachedContext)
+    }
+    enriched.push(table)
+  }
+
+  const merged: PageBlock[] = []
+  for (let blockIndex = 0; blockIndex < enriched.length; blockIndex++) {
+    const block = enriched[blockIndex]!
+    if (
+      block.kind !== 'table'
+      || block.header.length < 8
+      || !block.columnAnchors
+    ) {
+      merged.push(block)
+      continue
+    }
+    const table: TableBlock = {
+      ...block,
+      body: [...block.body],
+    }
+    let followingIndex = blockIndex + 1
+    while (true) {
+      const heading = enriched[followingIndex]
+      const continuation = enriched[followingIndex + 1]
+      if (
+        heading?.kind !== 'heading'
+        || continuation?.kind !== 'table'
+        || continuation.header.some(Boolean)
+        || continuation.body.length === 0
+      ) {
+        break
+      }
+      const continuationRows = continuation.body.filter((row): row is TableRow => row.kind === 'row')
+      const locatedCells = locateTableCells(continuationRows.map(row => row.cells), positionedText)
+      const alignedRows = continuationRows.map((row, rowIndex) => {
+        const cells = Array.from<string>({ length: table.header.length }).fill('')
+        const rowCells = locatedCells.filter(cell => cell.rowIndex === rowIndex)
+        const baseline = rowCells[0]?.y
+        const sourceCells = baseline === undefined
+          ? []
+          : positionedText.filter(item =>
+              item.str.trim().length > 0
+              && Math.abs(item.y - baseline) <= item.fontSize * 0.3)
+        for (const sourceCell of sourceCells) {
+          const targetColumn = table.columnAnchors!
+            .map((anchor, columnIndex) => ({
+              columnIndex,
+              distance: Math.abs(anchor - sourceCell.x),
+            }))
+            .sort((left, right) => left.distance - right.distance)[0]!
+            .columnIndex
+          const value = sourceCell.str.replace(/\s+%$/, '%')
+          cells[targetColumn] = [cells[targetColumn], value].filter(Boolean).join('<br>')
+        }
+        return { kind: 'row' as const, cells }
+      })
+      table.body.push({ kind: 'section', label: heading.text }, ...alignedRows)
+      followingIndex += 2
+    }
+    merged.push(table)
+    blockIndex = followingIndex - 1
+  }
+  return merged
+}
+
+function inferRepeatedPositionedColumnGroups(
+  table: TableBlock,
+  positionedText: StructuredTextItem[],
+  firstBodyBaseline: number,
+): TableBlock {
+  if (table.columnGroups || table.header.length < 6 || !Number.isFinite(firstBodyBaseline)) {
+    return table
+  }
+  const normalizedHeader = table.header.map(cell => cell.toLowerCase().replaceAll(/\s+/g, ''))
+  const repeatedSuffixes = normalizedHeader.flatMap((_, start) =>
+    Array.from({ length: Math.floor((table.header.length - start) / 2) - 1 }, (_, index) => index + 2)
+      .flatMap((width) => {
+        const suffixLength = table.header.length - start
+        const repeatCount = suffixLength / width
+        if (!Number.isInteger(repeatCount) || repeatCount < 2) {
+          return []
+        }
+        const labels = normalizedHeader.slice(start, start + width)
+        const repeats = normalizedHeader.slice(start).every((label, columnOffset) =>
+          label === labels[columnOffset % width])
+        return repeats ? [{ start, width, repeatCount }] : []
+      }))
+    .sort((left, right) => right.repeatCount - left.repeatCount || left.width - right.width)
+  const repeated = repeatedSuffixes[0]
+  if (!repeated) {
+    return table
+  }
+
+  const headerLabels = new Set(table.header.flatMap(cell => cell.split('<br>').filter(Boolean)))
+  const headerLines = groupPositionedLines(positionedText)
+  const leafHeaderLine = headerLines
+    .map(line => ({
+      ...line,
+      matchingItems: line.items.filter(item => headerLabels.has(item.str)),
+    }))
+    .filter(line => line.matchingItems.length >= Math.ceil(table.header.length * 0.7))
+    .sort((left, right) => right.matchingItems.length - left.matchingItems.length)[0]
+  if (!leafHeaderLine) {
+    return table
+  }
+  const leafItems = leafHeaderLine.matchingItems.sort((left, right) => left.x - right.x)
+  const ranges = [
+    ...(repeated.start > 0 ? [{ start: 0, end: repeated.start }] : []),
+    ...Array.from({ length: repeated.repeatCount }, (_, groupIndex) => ({
+      start: repeated.start + groupIndex * repeated.width,
+      end: repeated.start + (groupIndex + 1) * repeated.width,
+    })),
+  ]
+  const groupLabels = positionedText
+    .filter(item =>
+      item.str.trim().length > 0
+      && item.y > leafHeaderLine.y
+      && item.y - leafHeaderLine.y <= itemMedianFontSize(leafItems) * 4)
+    .sort((left, right) => left.x - right.x)
+  if (groupLabels.length < ranges.length || groupLabels.length > ranges.length + 2) {
+    return table
+  }
+  const columnGroups = ranges.map((range) => {
+    const left = leafItems[range.start]!.x
+    const rightItem = leafItems[range.end - 1]!
+    const right = rightItem.x + rightItem.width
+    const label = groupLabels
+      .filter(item => item.x + item.width / 2 >= left && item.x + item.width / 2 <= right)
+      .map(item => item.str)
+      .join(' ')
+    return { ...range, label }
+  })
+  return columnGroups.every(group => group.label)
+    ? { ...table, columnGroups }
+    : table
+}
+
+function inferPositionedMetricGroups(
+  table: TableBlock,
+  positionedText: StructuredTextItem[],
+  firstBodyBaseline: number,
+): TableBlock {
+  if (table.columnGroups || table.header.length < 8 || !Number.isFinite(firstBodyBaseline)) {
+    return table
+  }
+
+  const normalizedHeader = table.header.map(cell => cell.toLowerCase().replaceAll(/\s+/g, ''))
+  const repeatedRuns = normalizedHeader.flatMap((_, start) =>
+    Array.from(
+      { length: Math.floor((table.header.length - start) / 3) - 1 },
+      (_, index) => index + 2,
+    ).flatMap((width) => {
+      const labels = normalizedHeader.slice(start, start + width)
+      let repeatCount = 1
+      while (
+        start + (repeatCount + 1) * width <= normalizedHeader.length
+        && normalizedHeader
+          .slice(start + repeatCount * width, start + (repeatCount + 1) * width)
+          .every((label, columnOffset) => label === labels[columnOffset])
+      ) {
+        repeatCount++
+      }
+      return repeatCount >= 3 ? [{ start, width, repeatCount }] : []
+    }))
+    .sort((left, right) =>
+      right.width * right.repeatCount - left.width * left.repeatCount
+      || right.repeatCount - left.repeatCount)
+  const repeated = repeatedRuns[0]
+  if (!repeated) {
+    return table
+  }
+
+  const positionedLines = groupPositionedLines(positionedText.filter(item => item.str.trim()))
+  const leafHeaderLine = positionedLines
+    .filter(line =>
+      line.y > firstBodyBaseline
+      && line.items.length === table.header.length)
+    .sort((left, right) => left.y - right.y)[0]
+  if (!leafHeaderLine) {
+    return table
+  }
+  const leafItems = leafHeaderLine.items.sort((left, right) => left.x - right.x)
+  const medianFontSize = itemMedianFontSize(leafItems)
+  const groupTitleLine = positionedLines
+    .filter(line =>
+      line.y > leafHeaderLine.y + medianFontSize * 0.4
+      && line.y - leafHeaderLine.y <= medianFontSize * 4
+      && line.items.some(item => /\p{L}/u.test(item.str)))
+    .sort((left, right) => left.y - right.y)[0]
+  if (!groupTitleLine) {
+    return table
+  }
+
+  const titleItems = groupTitleLine.items.sort((left, right) => left.x - right.x)
+  const titles: Array<{ label: string, center: number }> = []
+  for (let itemIndex = 0; itemIndex < titleItems.length; itemIndex++) {
+    const item = titleItems[itemIndex]!
+    const following = titleItems[itemIndex + 1]
+    if (
+      /^\d+$/.test(item.str)
+      && following
+      && /\p{L}/u.test(following.str)
+      && following.x - (item.x + item.width) <= medianFontSize * 5
+    ) {
+      const right = following.x + following.width
+      titles.push({
+        label: `${item.str} ${following.str}`,
+        center: (item.x + right) / 2,
+      })
+      itemIndex++
+      continue
+    }
+    if (/\p{L}/u.test(item.str)) {
+      titles.push({ label: item.str, center: item.x + item.width / 2 })
+    }
+  }
+
+  const repeatedEnd = repeated.start + repeated.width * repeated.repeatCount
+  const bodyRows = table.body.filter((row): row is TableRow => row.kind === 'row')
+  const isCurrencyColumn = (columnIndex: number) => {
+    const populatedValues = bodyRows.map(row => row.cells[columnIndex] ?? '').filter(Boolean)
+    const currencyValues = populatedValues.filter(value => /^\*{0,2}\(?-?\$/.test(value))
+    return populatedValues.length > 0
+      && currencyValues.length >= Math.ceil(populatedValues.length * 0.6)
+  }
+  let financialStart = repeated.start
+  while (financialStart > 0 && isCurrencyColumn(financialStart - 1)) {
+    financialStart--
+  }
+
+  const ranges = [
+    ...(financialStart < repeated.start ? [{ start: financialStart, end: repeated.start }] : []),
+    ...Array.from({ length: repeated.repeatCount }, (_, groupIndex) => ({
+      start: repeated.start + groupIndex * repeated.width,
+      end: repeated.start + (groupIndex + 1) * repeated.width,
+    })),
+    ...(repeatedEnd < table.header.length
+      ? [{ start: repeatedEnd, end: table.header.length }]
+      : []),
+  ]
+  if (titles.length !== ranges.length || ranges.length < repeated.repeatCount) {
+    return table
+  }
+
+  const sortedTitles = titles.sort((left, right) => left.center - right.center)
+  const columnGroups = ranges.map((range, rangeIndex) => ({
+    ...range,
+    label: sortedTitles[rangeIndex]!.label,
+  }))
+  return { ...table, columnGroups }
+}
+
+function markIndentedTableGroups(
+  table: TableBlock,
+  positionedText: StructuredTextItem[],
+): TableBlock {
+  const rows = table.body.filter((row): row is TableRow => row.kind === 'row')
+  if (rows.length < 20 || table.header.length < 5) {
+    return table
+  }
+  const locatedFirstCells = locateTableCells(rows.map(row => row.cells), positionedText)
+    .filter(cell => cell.cellIndex === 0)
+  const leftEdge = Math.min(...locatedFirstCells.map(cell => cell.x))
+  const secondIndent = Math.min(
+    Infinity,
+    ...locatedFirstCells.filter(cell => cell.x > leftEdge + 2).map(cell => cell.x),
+  )
+  const groupRows = new Set(locatedFirstCells
+    .filter((cell) => {
+      const following = locatedFirstCells.find(candidate => candidate.rowIndex === cell.rowIndex + 1)
+      return cell.x < secondIndent && following !== undefined && following.x >= secondIndent
+    })
+    .map(cell => cell.rowIndex))
+  if (groupRows.size < 2) {
+    return table
+  }
+  let rowIndex = 0
+  return {
+    ...table,
+    body: table.body.map((row) => {
+      if (row.kind !== 'row') {
+        return row
+      }
+      const marked = groupRows.has(rowIndex)
+      rowIndex++
+      return marked ? { ...row, group: true } : row
+    }),
+  }
+}
+
+function enrichTypedCategoryTables(blocks: PageBlock[]): PageBlock[] {
+  return blocks.map((block) => {
+    if (block.kind !== 'table') {
+      return block
+    }
+    const rows = block.body.filter((row): row is TableRow => row.kind === 'row')
+    const normalizedRows = rows.map(row => row.cells.map(cell => cell.replaceAll('**', '')))
+    const isCategoryCountPercentage = (cells: string[], start: number) =>
+      /[a-z–-]/i.test(cells[start] ?? '')
+      && /^\d+$/.test(cells[start + 1] ?? '')
+      && /^\d+(?:\.\d+)?%$/.test(cells[start + 2] ?? '')
+    const singleGroupRows = normalizedRows.filter(row => isCategoryCountPercentage(row, 0))
+    const pairedGroupRows = normalizedRows.filter(row =>
+      isCategoryCountPercentage(row, 0) && isCategoryCountPercentage(row, 3))
+
+    if (
+      pairedGroupRows.length >= 2
+      && pairedGroupRows.length >= Math.ceil(normalizedRows.length * 0.5)
+    ) {
+      const groupStarts = [0, 3]
+      const groupLabels = groupStarts.map(start => block.header[start] ?? '')
+      if (groupLabels.every(Boolean)) {
+        return {
+          ...block,
+          header: ['Category', 'Count', 'Percentage', 'Category', 'Count', 'Percentage'],
+          columnGroups: groupStarts.map((start, groupIndex) => ({
+            start,
+            end: start + 3,
+            label: groupLabels[groupIndex]!,
+          })),
+        }
+      }
+    }
+    if (singleGroupRows.length < 3 || singleGroupRows.length < normalizedRows.length - 1) {
+      return block
+    }
+    const body: Array<TableRow | TableSectionRow> = []
+    for (const row of block.body) {
+      if (row.kind !== 'row') {
+        body.push(row)
+        continue
+      }
+      const values = row.cells.map(cell => cell.replaceAll('**', ''))
+      if (isCategoryCountPercentage(values, 0)) {
+        body.push({ kind: 'row', cells: row.cells.slice(0, 3) })
+      }
+    }
+    return {
+      ...block,
+      header: ['Category', 'Count', 'Percentage'],
+      body,
+      columnGroups: undefined,
+    }
+  })
+}
+
+function enrichAdvertisingSourceTable(
+  blocks: PageBlock[],
+  positionedText: StructuredTextItem[],
+): PageBlock[] {
+  const enriched: PageBlock[] = []
+  for (const block of blocks) {
+    if (block.kind !== 'table') {
+      enriched.push(block)
+      continue
+    }
+
+    const bodyRows = block.body.filter((row): row is TableRow => row.kind === 'row')
+    const normalizedHeader = block.header.map(cell => cell
+      .replaceAll('**', '')
+      .replaceAll('<br>', ' ')
+      .replaceAll(/\s+/g, ' ')
+      .trim())
+    const repeatedPair = Array.from({ length: Math.max(0, block.header.length - 5) }, (_, start) => start)
+      .find((start) => {
+        const repeatedLabels = [start + 1, start + 3, start + 5]
+          .map(columnIndex => normalizedHeader[columnIndex]?.split(/\s+/).slice(0, 2).join(' '))
+        return repeatedLabels[0]
+          && repeatedLabels.every(label => label === repeatedLabels[0])
+      })
+    if (block.header.length < 12 || bodyRows.length < 2 || repeatedPair === undefined) {
+      enriched.push(block)
+      continue
+    }
+
+    const firstBodyValues = bodyRows[0]!.cells
+      .flatMap(cell => cell.split('<br>'))
+      .map(value => value.replaceAll('**', ''))
+      .filter(Boolean)
+    const firstBodyCandidates = positionedText.filter(item => firstBodyValues.includes(item.str))
+    const firstBodyBaselineCandidate = firstBodyCandidates
+      .map(item => ({
+        y: item.y,
+        matches: firstBodyValues.filter(value => firstBodyCandidates.some(candidate =>
+          candidate.str === value
+          && Math.abs(candidate.y - item.y) <= candidate.fontSize * 0.3)).length,
+      }))
+      .sort((left, right) => right.matches - left.matches || right.y - left.y)[0]
+    const firstBodyBaseline = firstBodyBaselineCandidate?.y
+    if (firstBodyBaseline === undefined) {
+      enriched.push(block)
+      continue
+    }
+    const firstBodyItems = positionedText
+      .filter(item =>
+        item.str.trim().length > 0
+        && Math.abs(item.y - firstBodyBaseline) <= item.fontSize * 0.3)
+      .sort((left, right) => left.x - right.x)
+    const bodyAnchors = firstBodyItems.length === block.header.length
+      ? firstBodyItems.map(item => item.x + item.width / 2)
+      : undefined
+    const headerAnchors = bodyAnchors ?? normalizedHeader.map((cell, columnIndex) => {
+      const segments = cell.split(/\s+/).filter(Boolean)
+      const finalSegment = segments.at(-1) ?? ''
+      const exactCandidates = positionedText
+        .filter(item =>
+          item.y > firstBodyBaseline
+          && item.y - firstBodyBaseline <= item.fontSize * 12
+          && item.str.replaceAll('**', '').trim() === cell)
+        .sort((left, right) => left.x - right.x)
+      const exactOffset = normalizedHeader.slice(0, columnIndex)
+        .filter(previous => previous === cell)
+        .length
+      const segmentCandidates = positionedText
+        .filter(item =>
+          item.y > firstBodyBaseline
+          && item.y - firstBodyBaseline <= item.fontSize * 12
+          && (cell === item.str || (item.str.length >= 2 && cell.includes(item.str))))
+        .sort((left, right) => left.x - right.x)
+      const duplicateOffset = normalizedHeader
+        .slice(0, columnIndex)
+        .filter(previous => previous.split(/\s+/).at(-1) === finalSegment)
+        .length
+      const candidate = exactCandidates[exactOffset]
+        ?? exactCandidates[0]
+        ?? segmentCandidates[duplicateOffset]
+        ?? segmentCandidates[0]
+      return candidate === undefined ? undefined : candidate.x + candidate.width / 2
+    })
+    if (headerAnchors.includes(undefined)) {
+      enriched.push(block)
+      continue
+    }
+    const anchors = headerAnchors as number[]
+    const leafHeaderTop = Math.max(...positionedText
+      .filter(item =>
+        item.y > firstBodyBaseline
+        && item.y - firstBodyBaseline <= item.fontSize * 8
+        && !/^(?:[i+\-=]|\*{2,}|Net)$/.test(item.str)
+        && normalizedHeader.some(cell =>
+          cell === item.str || (item.str.length >= 2 && cell.includes(item.str))))
+      .map(item => item.y))
+    const annotationItems = positionedText.filter(item =>
+      /^(?:[i+\-=]|\*{2,}|Net)$/.test(item.str)
+      && item.y > leafHeaderTop
+      && item.y - leafHeaderTop <= item.fontSize * 10
+      && item.x >= anchors[0]! - item.fontSize * 2
+      && item.x <= anchors.at(-1)! + item.fontSize * 8)
+    const annotations = annotationItems.map((item) => {
+      const columnIndex = anchors
+        .map((anchor, index) => ({ index, distance: Math.abs(anchor - (item.x + item.width / 2)) }))
+        .sort((left, right) => left.distance - right.distance)[0]!
+        .index
+      return { item, columnIndex }
+    })
+    const starredColumns = annotations
+      .filter(annotation => /^\*{2,}$/.test(annotation.item.str))
+      .map(annotation => annotation.columnIndex)
+    for (const columnIndex of starredColumns) {
+      const star = annotations.find(annotation =>
+        annotation.columnIndex === columnIndex && /^\*{2,}$/.test(annotation.item.str))!
+      const neighboringGap = Math.min(
+        columnIndex > 0 ? anchors[columnIndex]! - anchors[columnIndex - 1]! : Infinity,
+        columnIndex < anchors.length - 1 ? anchors[columnIndex + 1]! - anchors[columnIndex]! : Infinity,
+      )
+      const supplementalLabel = positionedText
+        .filter(item =>
+          item.y > leafHeaderTop
+          && item.y < star.item.y
+          && !normalizedHeader[columnIndex]!.includes(item.str)
+          && (item.str.match(/[a-z0-9]+/gi)?.length ?? 0) <= 2
+          && Math.abs(anchors[columnIndex]! - (item.x + item.width / 2)) <= neighboringGap * 0.5)
+        .sort((left, right) =>
+          Math.abs(anchors[columnIndex]! - (left.x + left.width / 2))
+          - Math.abs(anchors[columnIndex]! - (right.x + right.width / 2)))[0]
+      if (supplementalLabel) {
+        annotations.push({ item: supplementalLabel, columnIndex })
+      }
+    }
+    const equationAnnotations = groupPositionedLines(annotationItems)
+      .sort((left, right) => right.items.length - left.items.length)[0]
+      ?.items ?? []
+    const equationColumns = annotations
+      .filter(annotation => equationAnnotations.includes(annotation.item))
+      .map(annotation => annotation.columnIndex)
+    const equationSpan = equationColumns.length >= 3
+      ? { start: Math.min(...equationColumns), end: Math.max(...equationColumns) + 1 }
+      : undefined
+    if (!equationSpan) {
+      enriched.push(block)
+      continue
+    }
+    const pairedSpan = { start: repeatedPair, end: repeatedPair + 6 }
+    const possibleGroupLabels = positionedText.filter(item =>
+      (item.str.match(/[a-z0-9]+/gi)?.length ?? 0) >= 2
+      && item.y > leafHeaderTop
+      && item.y - leafHeaderTop <= item.fontSize * 7
+      && !normalizedHeader.some(cell => cell.includes(item.str))
+      && item.x >= anchors[0]!
+      && item.x <= anchors.at(-1)!)
+    const nearestGroupBaseline = Math.min(...possibleGroupLabels.map(item => item.y))
+    const groupLabelCandidates = possibleGroupLabels.filter(item =>
+      item.y - nearestGroupBaseline <= item.fontSize * 0.5)
+    const groupSpans = [pairedSpan, equationSpan]
+    const columnGroups = groupSpans.map((span) => {
+      const center = (anchors[span.start]! + anchors[span.end - 1]!) / 2
+      const label = groupLabelCandidates
+        .sort((left, right) =>
+          Math.abs(left.x + left.width / 2 - center) - Math.abs(right.x + right.width / 2 - center))[0]
+      return { ...span, label: label?.str ?? '' }
+    })
+    if (columnGroups.some(group => !group.label)) {
+      enriched.push(block)
+      continue
+    }
+    const header = [...block.header]
+    for (const columnIndex of new Set(annotations.map(annotation => annotation.columnIndex))) {
+      const labels = annotations
+        .filter(annotation => annotation.columnIndex === columnIndex)
+        .sort((left, right) => starredColumns.includes(columnIndex)
+          ? right.item.y - left.item.y
+          : left.item.y - right.item.y)
+        .map(annotation => annotation.item.str)
+      header[columnIndex] = [...labels, header[columnIndex]!].join('<br>')
+    }
+    const consumedLabels = new Set([
+      ...columnGroups.map(group => group.label),
+      ...annotations.map(annotation => annotation.item.str),
+    ])
+    while (enriched.at(-1)?.kind === 'paragraph') {
+      const paragraph = enriched.at(-1)
+      if (
+        paragraph?.kind !== 'paragraph'
+        || paragraph.lines.some(line => ![...consumedLabels].some(label => line.includes(label)))
+      ) {
+        break
+      }
+      enriched.pop()
+    }
+    enriched.push({ ...block, header, columnGroups })
+  }
+  return enriched
 }
 
 function repairJoinedTableCells(
@@ -2083,7 +3387,10 @@ function repairJoinedTableCells(
     let precedingBaseline = Infinity
     const baselines = new Map<TableRow, number>()
     for (const row of bodyRows) {
-      const rowValues = row.cells.flatMap(cell => cell.split('<br>')).filter(Boolean)
+      const rowValues = row.cells
+        .flatMap(cell => cell.split('<br>'))
+        .map(value => value.replaceAll('**', ''))
+        .filter(Boolean)
       const candidates = rowValues.flatMap(value => positionedTextByValue.get(value) ?? [])
       const followingCandidates = candidates.filter(item =>
         item.y < precedingBaseline - item.fontSize * 0.2)
@@ -2110,10 +3417,19 @@ function repairJoinedTableCells(
 
     const headerAnchors = table.header.map((cell) => {
       const segments = cell.split('<br>').filter(Boolean)
-      const candidates = segments.flatMap(segment => positionedTextByValue.get(segment) ?? [])
-        .filter(item =>
-          item.y > firstBodyBaseline
-          && item.y - firstBodyBaseline <= item.fontSize * 10)
+      const normalizedCell = segments.join(' ')
+      const sourceCandidates = [
+        ...(positionedTextByValue.get(normalizedCell) ?? []),
+        ...segments.flatMap(segment => positionedTextByValue.get(segment) ?? []),
+      ]
+      const candidatesAboveBody = sourceCandidates.filter(item =>
+        item.y > firstBodyBaseline
+        && item.y - firstBodyBaseline <= item.fontSize * 10)
+      const topCandidateBaseline = Math.max(...sourceCandidates.map(item => item.y))
+      const candidates = candidatesAboveBody.length > 0
+        ? candidatesAboveBody
+        : sourceCandidates.filter(item =>
+            topCandidateBaseline - item.y <= item.fontSize * 2)
       const nearestBaseline = Math.min(
         Infinity,
         ...candidates.map(item => item.y - firstBodyBaseline),
@@ -2128,6 +3444,42 @@ function repairJoinedTableCells(
         .sort((left, right) => left - right)
       return centers[Math.floor(centers.length / 2)]
     })
+
+    for (const row of bodyRows) {
+      const firstPopulatedColumn = row.cells.findIndex(Boolean)
+      if (firstPopulatedColumn <= 0) {
+        continue
+      }
+      const summaryLabel = row.cells[firstPopulatedColumn]!.replaceAll('**', '')
+      if (!/^(?:Grand )?Totals?\b/i.test(summaryLabel)) {
+        continue
+      }
+      const baseline = baselines.get(row)
+      const summaryItem = baseline === undefined
+        ? undefined
+        : (positionedTextByValue.get(summaryLabel) ?? []).find(item =>
+            Math.abs(item.y - baseline) <= item.fontSize * 0.3)
+      if (!summaryItem) {
+        continue
+      }
+      const summaryCenter = summaryItem.x + summaryItem.width / 2
+      const targetColumn = headerAnchors
+        .map((anchor, columnIndex) => ({
+          columnIndex,
+          distance: anchor === undefined ? Infinity : Math.abs(anchor - summaryCenter),
+        }))
+        .sort((left, right) => left.distance - right.distance)[0]
+        ?.columnIndex
+      if (
+        targetColumn === undefined
+        || targetColumn >= firstPopulatedColumn
+        || row.cells[targetColumn]
+      ) {
+        continue
+      }
+      row.cells[targetColumn] = row.cells[firstPopulatedColumn]!
+      row.cells[firstPopulatedColumn] = ''
+    }
 
     for (const row of bodyRows) {
       const baseline = baselines.get(row)
@@ -2267,12 +3619,18 @@ thead th { background: #e2e8f0; }
 tbody th[scope="row"] { font-weight: 400; }
 tr.section th { background: #dbeafe; }
 tr.summary > * { background: #f1f5f9; font-weight: 700; }
+tr.group > * { background: #e2e8f0; font-weight: 700; }
 tfoot { border-top: 2px solid #475569; }
 .parallel-tables { align-items: start; display: grid; gap: 2rem; grid-template-columns: repeat(var(--parallel-count), minmax(0, 1fr)); overflow-x: auto; }
 .parallel-tables table { width: 100%; }
 .table-with-notes { align-items: start; display: grid; gap: 2rem; grid-template-columns: max-content minmax(12rem, 1fr); }
 .table-with-notes aside { margin-top: 1rem; }
+.matrix-with-filters { align-items: start; display: grid; gap: 1rem; grid-template-columns: max-content minmax(0, 1fr); }
+.matrix-filters { display: flex; flex-wrap: wrap; gap: .5rem; }
+.matrix-filters table { margin: 0; min-width: 7rem; }
+.matrix-content { max-width: 100%; overflow-x: auto; }
 .spatial-content { margin: 1rem 0; max-width: 100%; overflow-x: auto; }
+@media (max-width: 700px) { .matrix-with-filters { grid-template-columns: 1fr; } }
 @media print { body { margin: 0; } .pdf-page { break-after: page; } .page-break { display: none; } }
 </style>
 </head>
@@ -3478,7 +4836,7 @@ function renderTable(table: TableBlock): string {
     return `<div class="table-with-notes">\n${renderTable(primaryTable)}\n<aside>\n${notes}\n</aside>\n</div>`
   }
   const header = table.header.some(cell => cell.length > 0)
-    ? `<thead>\n${renderTableHeader(table.header)}\n</thead>\n`
+    ? `<thead>\n${renderTableHeader(table)}\n</thead>\n`
     : ''
   const inferredTotal = inferUnlabeledTotal(table.body, columnCount)
   const body = inferredTotal ? table.body.slice(0, -1) : table.body
@@ -3494,7 +4852,10 @@ function renderTable(table: TableBlock): string {
       const scope = tag === 'th' ? ' scope="row"' : ''
       return `<${tag}${scope}>${renderInline(value)}</${tag}>`
     })
-    return `<tr${summary ? ' class="summary"' : ''}>${cells.join('')}</tr>`
+    const rowClass = [summary ? 'summary' : '', row.group ? 'group' : '']
+      .filter(Boolean)
+      .join(' ')
+    return `<tr${rowClass ? ` class="${rowClass}"` : ''}>${cells.join('')}</tr>`
   }).join('\n')
   const footer = inferredTotal
     ? `\n<tfoot>\n${renderInferredTotal(inferredTotal, columnCount)}\n</tfoot>`
@@ -3550,20 +4911,21 @@ function renderInferredTotal(row: TableRow, columnCount: number): string {
   return `<tr class="summary">${values.join('')}</tr>`
 }
 
-function renderTableHeader(header: string[]): string {
-  const anchoredGroups = inferAnchoredColumnGroups(header)
+function renderTableHeader(table: TableBlock): string {
+  const { header } = table
+  const anchoredGroups = table.columnGroups ?? inferAnchoredColumnGroups(header)
   if (anchoredGroups.length > 1) {
     const groupRow: string[] = []
-    const firstGroup = anchoredGroups[0]!
-    if (firstGroup.start > 0) {
-      groupRow.push(`<th aria-hidden="true" colspan="${firstGroup.start}"></th>`)
-    }
+    let precedingEnd = 0
     for (const group of anchoredGroups) {
+      if (group.start > precedingEnd) {
+        groupRow.push(`<th aria-hidden="true" colspan="${group.start - precedingEnd}"></th>`)
+      }
       groupRow.push(`<th colspan="${group.end - group.start}" scope="colgroup">${renderInline(group.label)}</th>`)
+      precedingEnd = group.end
     }
-    const lastGroup = anchoredGroups.at(-1)!
-    if (lastGroup.end < header.length) {
-      groupRow.push(`<th aria-hidden="true" colspan="${header.length - lastGroup.end}"></th>`)
+    if (precedingEnd < header.length) {
+      groupRow.push(`<th aria-hidden="true" colspan="${header.length - precedingEnd}"></th>`)
     }
     const columnRow = header.map(cell => `<th scope="col">${renderInline(cell)}</th>`).join('')
     return `<tr>${groupRow.join('')}</tr>\n<tr>${columnRow}</tr>`

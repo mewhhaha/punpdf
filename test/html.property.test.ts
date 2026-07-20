@@ -624,6 +624,255 @@ describe('html extraction properties', () => {
     expect(html[0]).toContain('<tr class="section"><th colspan="8" scope="rowgroup">1-1</th></tr>')
   })
 
+  it('preserves grouped advertising headers and their column annotations', async () => {
+    const starts = [
+      15,
+      49,
+      83,
+      117,
+      151,
+      185,
+      219,
+      253,
+      287,
+      321,
+      355,
+      389,
+      423,
+      457,
+      491,
+      525,
+      559,
+    ]
+    const headers = [
+      'Advertising Source',
+      'New Prospects',
+      'This Period % of Prospects',
+      'Phone Calls',
+      'This Period % of Phone Calls',
+      'Visits',
+      'This Period % of Visits',
+      'Visits',
+      'Return Visits',
+      '** Off-Site Conversions',
+      'Lease Applications',
+      'Waitlist',
+      'Leases Cancelled / Denied',
+      'Leases with Waitlist',
+      '% of Net',
+      'Prospects Converted to Lease Applications',
+      'Visits Converted to Lease Applications',
+    ]
+    const { html } = await extractHTML(authorPdf([
+      { text: 'Primary Advertising Source Evaluation', x: 190, y: 830, size: 8 },
+      { text: 'i', x: starts[10]!, y: 818, size: 4 },
+      { text: '+', x: starts[11]!, y: 818, size: 4 },
+      { text: '-', x: starts[12]!, y: 818, size: 4 },
+      { text: '=', x: starts[13]!, y: 818, size: 4 },
+      { text: '1st Time Contacts', x: 185, y: 810, size: 4 },
+      { text: 'Leasing Activity Detail', x: 425, y: 810, size: 4 },
+      { text: 'Net', x: starts[13]!, y: 792, size: 4 },
+      { text: '***', x: starts[15]!, y: 800, size: 4 },
+      { text: '***', x: starts[16]!, y: 800, size: 4 },
+      ...tableRuns([
+        headers,
+        ['Apartment List', '26', '21.85%', '1', '10.00%', '0', '0.00%', '5', '1', '5', '1', '1', '1', '1', '6.25%', '3.85%', '20.00%'],
+        ['Totals:', '26', '100.00%', '1', '100.00%', '0', '0.00%', '5', '1', '5', '1', '1', '1', '1', '100.00%', '3.85%', '20.00%'],
+      ], { size: 1, starts, top: 785 }),
+    ]))
+
+    expect(html[0]).toContain('<th colspan="6" scope="colgroup">1st Time Contacts</th>')
+    expect(html[0]).toContain('<th colspan="4" scope="colgroup">Leasing Activity Detail</th>')
+    expect(html[0]).toContain('<th scope="col">i<br>Lease Applications</th>')
+    expect(html[0]).toContain('<th scope="col">+<br>Waitlist</th>')
+    expect(html[0]).toContain('<th scope="col">-<br>Leases Cancelled / Denied</th>')
+    expect(html[0]).toContain('<th scope="col">Net<br>=<br>Leases with Waitlist</th>')
+    expect(html[0]).toContain('<th scope="col">***<br>Prospects Converted to Lease Applications</th>')
+    expect(html[0]).toContain('<th scope="col">***<br>Visits Converted to Lease Applications</th>')
+    expect(html[0]).not.toContain('<p>i + - =</p>')
+  })
+
+  it('keeps grouped table totals in the first column', async () => {
+    const starts = [30, 180, 300, 430]
+    const { html } = await extractHTML(authorPdf([
+      { text: 'Boxscore', x: 250, y: 825, size: 10 },
+      ...tableRuns([
+        ['Floor Plan Group', 'Floor Plan', 'Units', 'Move-Ins'],
+      ], { size: 5, starts, top: 800 }),
+      { text: '1-1', x: starts[0]!, y: 780, size: 5 },
+      ...tableRuns([
+        ['', 'A1', '18', '2'],
+        ['Total 1-1:', '', '18', '2'],
+      ], { size: 5, starts, top: 765 }),
+    ]))
+    const totalRow = htmlRows(html[0]!).map(htmlCells).find(row =>
+      row.includes('Total 1-1:'))
+
+    expect(totalRow).toEqual(['Total 1-1:', '', '18', '2'])
+  })
+
+  it('uses demographic headers instead of an unrelated inherited schema', async () => {
+    const priorPage = [
+      { text: 'Lease Expiration Report', x: 190, y: 820, size: 10 },
+      ...tableRuns([
+        ['Leasing Consultant', 'Captured from month to month', 'Captured this month', 'Captured in the future'],
+        ['Example Consultant', '1', '2', '3'],
+      ], { size: 4, starts: [30, 170, 330, 470], top: 790 }),
+    ]
+    const demographicPage = [
+      { text: 'Demographic statistics report', x: 190, y: 820, size: 10 },
+      { text: 'Age Range:', x: 30, y: 790, size: 7 },
+      ...tableRuns([
+        ['46 - 49', '31', '3.38%'],
+        ['50 - 53', '35', '3.81%'],
+        ['Unknown', '17', '1.85%'],
+        ['Total', '83', '9.04%'],
+      ], { size: 5, starts: [30, 250, 400], top: 770 }),
+      { text: '1/2', x: 560, y: 20, size: 5 },
+    ]
+    const { html } = await extractHTML(authorPdf(priorPage, [demographicPage]))
+    const ageRangeHTML = html[1]!.slice(html[1]!.indexOf('<h2>Age Range:</h2>'))
+
+    expect(ageRangeHTML).toContain('<th scope="col">Category</th><th scope="col">Count</th><th scope="col">Percentage</th>')
+    expect(ageRangeHTML).not.toContain('Leasing Consultant')
+    expect(ageRangeHTML).not.toContain('Captured from')
+    expect(ageRangeHTML).not.toContain('>1/2<')
+  })
+
+  it('renders adjacent income tables as repeated three-column groups', async () => {
+    const starts = [30, 180, 260, 310, 460, 540]
+    const { html } = await extractHTML(authorPdf([
+      { text: 'Demographic statistics report', x: 190, y: 820, size: 10 },
+      ...tableRuns([
+        ['Individual income:', '', '', 'Household income:', '', ''],
+        ['Below 10,000', '211', '23.19%', 'Below 10,000', '24', '4.42%'],
+        ['10,000 - 16,000', '11', '1.21%', '10,000 - 16,000', '2', '0.37%'],
+      ], { size: 4, starts, top: 780 }),
+    ]))
+
+    expect(html[0]).toContain('<th colspan="3" scope="colgroup">Individual income:</th>')
+    expect(html[0]).toContain('<th colspan="3" scope="colgroup">Household income:</th>')
+    expect(html[0]).toContain(
+      '<th scope="col">Category</th><th scope="col">Count</th><th scope="col">Percentage</th>'
+      + '<th scope="col">Category</th><th scope="col">Count</th><th scope="col">Percentage</th>',
+    )
+  })
+
+  it('keeps report context outside repeated metric column groups', async () => {
+    const starts = Array.from({ length: 26 }, (_, columnIndex) => 10 + columnIndex * 22)
+    const header = [
+      'Property Name',
+      'Floorplan Name',
+      'Beds',
+      'Baths',
+      'Half Baths',
+      '# Units',
+      'Avg Days on Mkt',
+      'Sqft',
+      'Rent',
+      'PSF',
+      'NER',
+      'NER PSF',
+      'Rent',
+      'NER',
+      '# Leases',
+      'Rent',
+      'NER',
+      '# Leases',
+      'Rent',
+      'NER',
+      '# Leases',
+      'Rent',
+      'NER',
+      'Conc. %',
+      'Avg DOM',
+      '# Listings',
+    ]
+    const firstRecord = [
+      'Subject Property',
+      'A1',
+      '1',
+      '1',
+      '1',
+      '18',
+      '135',
+      '749',
+      '$1,664',
+      '$2.22',
+      '$1,661',
+      '$2.22',
+      '$1,639',
+      '$1,639',
+      '6',
+      '$1,641',
+      '$1,641',
+      '4',
+      '$1,606',
+      '$1,606',
+      '2',
+      '$1,650',
+      '$1,620',
+      '1.8%',
+      '24',
+      '8',
+    ]
+    const secondRecord = [
+      'Comparable Property',
+      'A2',
+      '2',
+      '2',
+      '0',
+      '24',
+      '42',
+      '980',
+      '$1,900',
+      '$1.94',
+      '$1,875',
+      '$1.91',
+      '$1,850',
+      '$1,825',
+      '3',
+      '$1,840',
+      '$1,815',
+      '2',
+      '$1,830',
+      '$1,805',
+      '1',
+      '$1,860',
+      '$1,820',
+      '2.4%',
+      '31',
+      '5',
+    ]
+    const runs = [
+      { text: 'Unit Mix - Subject & Comps', x: 10, y: 830, size: 8 },
+      { text: 'Note: Leased rents include recent rent-roll observations for the selected period.', x: 10, y: 816, size: 4 },
+      { text: 'Metric', x: 400, y: 816, size: 4 },
+      { text: 'Chunk Rent', x: 430, y: 816, size: 4 },
+      { text: 'Leased Rents (Rent Roll)', x: 190, y: 807, size: 2 },
+      { text: '90', x: 274, y: 807, size: 2 },
+      { text: 'Day Leased Rents', x: 284, y: 807, size: 2 },
+      { text: '60', x: 340, y: 807, size: 2 },
+      { text: 'Day Leased Rents', x: 350, y: 807, size: 2 },
+      { text: '30', x: 406, y: 807, size: 2 },
+      { text: 'Day Leased Rents', x: 416, y: 807, size: 2 },
+      { text: 'Active Listings', x: 492, y: 807, size: 2 },
+      ...tableRuns([header, firstRecord, secondRecord], { size: 2, starts, top: 800 }),
+    ]
+    const { html } = await extractHTML(authorPdf(runs))
+    const tableHeader = /<thead>[\s\S]*?<\/thead>/.exec(html[0]!)?.[0]
+
+    expect(html[0]).toContain('<p>Metric: Chunk Rent</p>')
+    expect(html[0]).toContain('<p>Note: Leased rents include recent rent-roll observations for the selected period.</p>')
+    expect(tableHeader).not.toContain('Note:')
+    expect(tableHeader).not.toContain('Metric')
+    expect(tableHeader).toContain('<th colspan="4" scope="colgroup">Leased Rents (Rent Roll)</th>')
+    expect(tableHeader).toContain('<th colspan="3" scope="colgroup">90 Day Leased Rents</th>')
+    expect(tableHeader).toContain('<th colspan="3" scope="colgroup">60 Day Leased Rents</th>')
+    expect(tableHeader).toContain('<th colspan="3" scope="colgroup">30 Day Leased Rents</th>')
+    expect(tableHeader).toContain('<th colspan="5" scope="colgroup">Active Listings</th>')
+  })
+
   it('keeps an extra numeric column in an independent section', async () => {
     const { html } = await extractHTML(authorPdf([
       { text: 'Measures', x: 40, y: 810, size: 14 },
@@ -1789,6 +2038,81 @@ describe('html extraction properties', () => {
     expect(htmlText(html[0]!)).toContain('Property Name\nAllaso High Desert\nBeds')
     expect(htmlRows(html[0]!).map(htmlCells)).toContainEqual(['Property', 'Beds', 'Baths', 'Units', 'Rent', 'NER'])
     expect(htmlRows(html[0]!).map(htmlCells).flat()).not.toContain('Property Name')
+  })
+
+  it('reconstructs a filtered matrix with grouped metric bands', async () => {
+    const starts = Array.from({ length: 20 }, (_, columnIndex) => 100 + columnIndex * 23)
+    const header = [
+      'Property',
+      'Beds',
+      'Baths',
+      'Plan',
+      'Rent',
+      'NER',
+      'Conc. %',
+      '# Leases',
+      'Rent',
+      'NER',
+      'Conc. %',
+      '# Leases',
+      'Min',
+      'Avg',
+      'Max',
+      'Avg PSF',
+      'Min',
+      'Avg',
+      'Max',
+      'Avg PSF',
+    ]
+    const body = Array.from({ length: 22 }, (_, rowIndex) => [
+      rowIndex === 0 ? 'Subject Property' : '',
+      String(rowIndex % 3 + 1),
+      String(rowIndex % 2 + 1),
+      `Plan ${rowIndex + 1}`,
+      ...Array.from({ length: 16 }, (_, metricIndex) =>
+        metricIndex % 4 === 2
+          ? `${metricIndex + rowIndex}.0%`
+          : `$${1_500 + metricIndex * 10 + rowIndex}`),
+    ])
+    const runs = [
+      { text: 'Dense Rent Matrix', x: 20, y: 820, size: 8 },
+      { text: 'Report Date:', x: 470, y: 820, size: 3 },
+      { text: '06/15/2026', x: 520, y: 820, size: 3 },
+      { text: 'Note: Select filters at left to constrain the matrix while retaining every aligned metric column.', x: 20, y: 795, size: 3 },
+      { text: 'Metric', x: 350, y: 795, size: 3 },
+      { text: 'Rolling Rent', x: 390, y: 795, size: 3 },
+      { text: '90', x: starts[4]!, y: 784, size: 2 },
+      { text: '90-Day Trailing Rents', x: starts[4]! + 8, y: 784, size: 5 },
+      { text: '30', x: starts[8]!, y: 784, size: 2 },
+      { text: '30-Day Trailing Rents', x: starts[8]! + 8, y: 784, size: 5 },
+      { text: 'Active Asking Rents', x: starts[12]! + 4, y: 784, size: 5 },
+      { text: 'Active Effective Rents', x: starts[16]! + 4, y: 784, size: 5 },
+      ...tableRuns([header, ...body], { size: 1.5, starts, top: 780 }),
+      { text: 'Property Name', x: 20, y: 777, size: 2 },
+      { text: 'Subject Property', x: 21, y: 774, size: 2 },
+      { text: 'Comparable Property', x: 21, y: 771, size: 2 },
+      { text: 'Beds', x: 20, y: 750, size: 2 },
+      { text: '1', x: 21, y: 747, size: 2 },
+      { text: '2', x: 21, y: 744, size: 2 },
+      { text: 'Baths', x: 60, y: 750, size: 2 },
+      { text: '1', x: 61, y: 747, size: 2 },
+      { text: '2', x: 61, y: 744, size: 2 },
+    ]
+    const { html } = await extractHTML(authorPdf(runs))
+    const matrix = html[0]!.split('<div class="matrix-content">', 2)[1]!
+    const matrixHeader = /<thead>[\s\S]*?<\/thead>/.exec(matrix)?.[0]
+    const matrixBody = /<tbody>[\s\S]*?<\/tbody>/.exec(matrix)?.[0]
+
+    expect(html[0]).toContain('<div class="matrix-with-filters">')
+    expect(html[0]).toContain('<aside class="matrix-filters">')
+    expect(html[0]!.match(/<table>/g)).toHaveLength(4)
+    expect(matrixHeader).toContain('<th colspan="4" scope="colgroup">90-Day Trailing Rents</th>')
+    expect(matrixHeader).toContain('<th colspan="4" scope="colgroup">30-Day Trailing Rents</th>')
+    expect(matrixHeader).toContain('<th colspan="4" scope="colgroup">Active Asking Rents</th>')
+    expect(matrixHeader).toContain('<th colspan="4" scope="colgroup">Active Effective Rents</th>')
+    expect(matrixHeader?.match(/scope="col">/g)).toHaveLength(20)
+    expect(matrixBody).not.toContain('Property Name')
+    expect(html[0]).toContain('<p>Metric: Rolling Rent</p>')
   })
 
   it('does not promote nearby multi-row labels to data columns', async () => {
