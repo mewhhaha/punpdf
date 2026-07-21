@@ -6461,7 +6461,87 @@ function renderReportMetadata(table: TableBlock): string {
   return `<header class="report-metadata">\n${content}\n</header>`
 }
 
-function renderTable(table: TableBlock): string {
+function inferLeadingRowGroups(table: TableBlock): TableBlock {
+  const rows = table.body.filter((row): row is TableRow => row.kind === 'row')
+  if (
+    table.layout === 'chart'
+    || table.header.length < 3
+    || rows.length < 3
+    || rows.some(row => row.rowSpans || row.hierarchyLevel !== undefined)
+    || rows.length !== table.body.length
+  ) {
+    return table
+  }
+
+  const normalizedHeader = table.header[0]?.replaceAll('<br>', ' ').trim().toLowerCase()
+  const groups: Array<{ start: number, end: number, followedByTotal: boolean }> = []
+  for (let rowIndex = 0; rowIndex < rows.length - 1; rowIndex++) {
+    const label = rows[rowIndex]!.cells[0]?.replaceAll('**', '').trim() ?? ''
+    if (
+      !label
+      || /^(?:Grand )?Totals?\b/i.test(label)
+      || label.toLowerCase() === normalizedHeader
+    ) {
+      continue
+    }
+    let followingIndex = rowIndex + 1
+    while (followingIndex < rows.length && !(rows[followingIndex]!.cells[0] ?? '')) {
+      followingIndex++
+    }
+    if (followingIndex === rowIndex + 1) {
+      continue
+    }
+    const boundaryLabel = rows[followingIndex]?.cells[0]?.replaceAll('**', '').trim() ?? ''
+    groups.push({
+      start: rowIndex,
+      end: followingIndex,
+      followedByTotal: /^(?:Grand )?Totals?\b/i.test(boundaryLabel),
+    })
+    rowIndex = followingIndex - 1
+  }
+  if (groups.length === 0) {
+    return table
+  }
+  const firstGroupLabel = rows[groups[0]!.start]!.cells[0]?.replaceAll('**', '').trim() ?? ''
+  const singleGroupHasRowLabelEvidence = table.header.some(Boolean)
+    && (
+      /[a-z]/i.test(firstGroupLabel)
+      || /\b(?:account|group|property|unit)\b/i.test(normalizedHeader ?? '')
+    )
+  if (
+    groups.length < 2
+    && !groups.some(group => group.followedByTotal)
+    && !singleGroupHasRowLabelEvidence
+  ) {
+    return table
+  }
+
+  const groupedRows = rows.map(row => ({
+    ...row,
+    cells: [...row.cells],
+    rowSpans: Array.from<number>({ length: table.header.length }).fill(1),
+  }))
+  for (const group of groups) {
+    const continuationRows = groupedRows.slice(group.start + 1, group.end)
+    let leadingColumnCount = 1
+    while (
+      leadingColumnCount < table.header.length
+      && continuationRows.every(row => !(row.cells[leadingColumnCount] ?? ''))
+    ) {
+      leadingColumnCount++
+    }
+    for (let columnIndex = 0; columnIndex < leadingColumnCount; columnIndex++) {
+      groupedRows[group.start]!.rowSpans[columnIndex] = group.end - group.start
+      for (let rowIndex = group.start + 1; rowIndex < group.end; rowIndex++) {
+        groupedRows[rowIndex]!.rowSpans[columnIndex] = 0
+      }
+    }
+  }
+  return { ...table, body: groupedRows }
+}
+
+function renderTable(sourceTable: TableBlock): string {
+  const table = inferLeadingRowGroups(sourceTable)
   const columnCount = table.header.length
   const tableRows = table.body.filter((row): row is TableRow => row.kind === 'row')
   const yearGroupSpans = new Map<number, number>()

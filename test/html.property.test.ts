@@ -167,6 +167,57 @@ describe('html extraction properties', () => {
     expect(htmlCells(rows[5]!)).toEqual(unitRows[4])
   })
 
+  it('spans leading row labels and attributes across flat detail groups', async () => {
+    const { html } = await extractHTML(authorPdf(tableRuns([
+      ['Property', 'Distance', 'Year Built', '# Units', 'Beds', 'Floorplan', 'Rent'],
+      ['Alpha Homes', '1.2', '2020', '100', '1', 'A1', '$1,500'],
+      ['', '', '', '', '1', 'A2', '$1,600'],
+      ['', '', '', '', '2', 'B1', '$1,900'],
+      ['Total', '', '', '100', '', '', '$1,700'],
+      ['Beta Homes', '2.4', '2018', '80', '1', 'A1', '$1,400'],
+      ['', '', '', '', '2', 'B1', '$1,800'],
+      ['Total', '', '', '80', '', '', '$1,600'],
+    ], {
+      size: 4,
+      starts: [30, 130, 190, 250, 310, 370, 500],
+      top: 790,
+    })))
+
+    expect(html[0]).toContain(
+      '<th rowspan="3" scope="rowgroup">Alpha Homes</th>'
+      + '<td rowspan="3">1.2</td>'
+      + '<td rowspan="3">2020</td>'
+      + '<td rowspan="3">100</td>',
+    )
+    expect(html[0]).toContain(
+      '<th rowspan="2" scope="rowgroup">Beta Homes</th>'
+      + '<td rowspan="2">2.4</td>'
+      + '<td rowspan="2">2018</td>'
+      + '<td rowspan="2">80</td>',
+    )
+    expect(htmlRows(html[0]!).map(htmlCells).filter(row => row[0] === 'Total')).toHaveLength(2)
+    expect(html[0]).not.toMatch(/rowspan="\d+"[^>]*>Total/)
+  })
+
+  it('spans one leading row label when named columns establish its continuation rows', async () => {
+    const { html } = await extractHTML(authorPdf(tableRuns([
+      ['Account', 'Charge', 'Beginning', 'Ending', 'Variance', 'Status'],
+      ['Prepaid Rent', 'RENT', '$100', '$80', '$20', 'Open'],
+      ['', 'UTILITY', '$20', '$15', '$5', 'Open'],
+      ['', 'FEES', '$10', '$5', '$5', 'Open'],
+    ], {
+      size: 5,
+      starts: [30, 140, 250, 340, 430, 520],
+      top: 790,
+    })))
+
+    expect(html[0]).toContain(
+      '<th rowspan="3" scope="rowgroup">Prepaid Rent</th>'
+      + '<td>RENT</td><td>$100</td><td>$80</td><td>$20</td><td>Open</td>',
+    )
+    expect(htmlRows(html[0]!).map(htmlCells)).toContainEqual(['UTILITY', '$20', '$15', '$5', 'Open'])
+  })
+
   it('uses a wide record as the schema when detail rows are sparse', async () => {
     const headers = [
       'Unit',
@@ -208,12 +259,8 @@ describe('html extraction properties', () => {
 
     expect(renderedRows).toContainEqual(headers)
     expect(renderedRows).toContainEqual(rows[0])
+    expect(html[0]).toContain('<th rowspan="7" scope="rowgroup">101</th>')
     expect(renderedRows).toContainEqual([
-      '',
-      '',
-      '',
-      '',
-      '',
       'Resident,\nOne',
       '',
       '',
@@ -226,7 +273,7 @@ describe('html extraction properties', () => {
       '',
       '',
     ])
-    expect(renderedRows).toContainEqual(rows[5])
+    expect(renderedRows).toContainEqual(rows[5]!.slice(5))
   })
 
   it('keeps sparse subrows aligned across varying table widths', async () => {
