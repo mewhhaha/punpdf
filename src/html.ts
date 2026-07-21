@@ -2,7 +2,7 @@ import type { DocumentInitParameters, PDFDocumentProxy } from 'pdfjs-dist/types/
 import type { StructuredTextItem } from './text'
 import { createIsomorphicCanvasFactory, renderPageAsImage } from './image'
 import { extractText, extractTextItems } from './text'
-import { getDocumentProxy, isPDFDocumentProxy } from './utils'
+import { getDocumentProxy, getResolvedPDFJS, isPDFDocumentProxy } from './utils'
 
 export interface ExtractHTMLOptions {
   mergePages?: boolean
@@ -43,11 +43,104 @@ export async function extractHTML(
     : document
   let extractedText: { totalPages: number, text: string[] }
   let extractedItems: Awaited<ReturnType<typeof extractTextItems>>
+  let pageGraphics: PositionedGraphic[][] = []
   let pageImages: string[] | undefined
 
   try {
     extractedText = await extractText(document, { readingOrder: 'visual' })
     extractedItems = await extractTextItems(document)
+    const pagesNeedingChartGraphics = extractedItems.items.flatMap((pageItems, pageIndex) => {
+      const chartTables = renderChartTables(pageItems)
+      return chartTables?.some(line => /\|\s*\|/.test(line)) ? [pageIndex] : []
+    })
+    if (pagesNeedingChartGraphics.length > 0) {
+      const { OPS, Util } = await getResolvedPDFJS()
+      pageGraphics = Array.from({ length: document.numPages }, () => [])
+      const fillOperations = new Set([
+        OPS.fill,
+        OPS.eoFill,
+        OPS.fillStroke,
+        OPS.eoFillStroke,
+        OPS.closeFillStroke,
+        OPS.closeEOFillStroke,
+      ])
+      for (const pageIndex of pagesNeedingChartGraphics) {
+        const page = await document.getPage(pageIndex + 1)
+        const operatorList = await page.getOperatorList()
+        let graphicState = {
+          transform: [1, 0, 0, 1, 0, 0],
+          fillColor: '',
+          strokeColor: '',
+        }
+        const graphicStateStack: typeof graphicState[] = []
+        for (let operationIndex = 0; operationIndex < operatorList.fnArray.length; operationIndex++) {
+          const operation = operatorList.fnArray[operationIndex]
+          const operationArguments = operatorList.argsArray[operationIndex] ?? []
+          if (operation === OPS.save) {
+            graphicStateStack.push({
+              ...graphicState,
+              transform: [...graphicState.transform],
+            })
+          }
+          else if (operation === OPS.restore) {
+            graphicState = graphicStateStack.pop() ?? graphicState
+          }
+          else if (operation === OPS.transform) {
+            graphicState.transform = Util.transform(
+              graphicState.transform,
+              operationArguments,
+            )
+          }
+          else if (operation === OPS.paintFormXObjectBegin) {
+            graphicStateStack.push({
+              ...graphicState,
+              transform: [...graphicState.transform],
+            })
+            if (operationArguments[0]) {
+              graphicState.transform = Util.transform(
+                graphicState.transform,
+                operationArguments[0],
+              )
+            }
+          }
+          else if (operation === OPS.paintFormXObjectEnd) {
+            graphicState = graphicStateStack.pop() ?? graphicState
+          }
+          else if (operation === OPS.setFillRGBColor) {
+            graphicState.fillColor = String(operationArguments[0])
+          }
+          else if (operation === OPS.setStrokeRGBColor) {
+            graphicState.strokeColor = String(operationArguments[0])
+          }
+          else if (operation === OPS.constructPath && operationArguments[2]) {
+            const bounds = [Infinity, Infinity, -Infinity, -Infinity]
+            Util.axialAlignedBoundingBox(
+              operationArguments[2],
+              graphicState.transform,
+              bounds,
+            )
+            if (bounds.every(Number.isFinite)) {
+              const serializedPaths = operationArguments[1]
+              pageGraphics[pageIndex]!.push({
+                left: bounds[0]!,
+                bottom: bounds[1]!,
+                right: bounds[2]!,
+                top: bounds[3]!,
+                color: fillOperations.has(operationArguments[0])
+                  ? graphicState.fillColor
+                  : graphicState.strokeColor,
+                serializedPathLength: serializedPaths?.reduce(
+                  (length: number, path: ArrayLike<number>) => length + path.length,
+                  0,
+                ) ?? 0,
+                subpathCount: countSerializedPathSubpaths(serializedPaths),
+              })
+            }
+          }
+        }
+        page.cleanup()
+      }
+    }
     if (preserveLayout) {
       pageImages = []
       for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber++) {
@@ -402,7 +495,7 @@ export async function extractHTML(
       || hasFragmentedParallelNarrative
       || hasSparseCompoundGrid
       || hasFragmentedDirectory
-    const chartTables = renderChartTables(pageItems)
+    const chartTables = renderChartTables(pageItems, pageGraphics[pageIndex] ?? [])
     if (chartTables) {
       const firstRow = lines[0]!.split('\t').map(value => value.trim()).filter(Boolean)
       const title = firstRow[0]
@@ -1885,13 +1978,26 @@ interface PositionedTextLine {
   items: StructuredTextItem[]
 }
 
+interface PositionedGraphic {
+  left: number
+  right: number
+  top: number
+  bottom: number
+  color: string
+  serializedPathLength: number
+  subpathCount: number
+}
+
 interface ChartSeries {
   label: string
   start: number
   values: StructuredTextItem[]
 }
 
-function renderChartTables(positionedText: StructuredTextItem[]): string[] | undefined {
+function renderChartTables(
+  positionedText: StructuredTextItem[],
+  positionedGraphics: PositionedGraphic[] = [],
+): string[] | undefined {
   const visibleText = positionedText.filter(textRun => textRun.str.trim().length > 0)
   const lines: PositionedTextLine[] = []
   for (const textRun of [...visibleText].sort((left, right) => right.y - left.y || left.x - right.x)) {
@@ -1922,7 +2028,7 @@ function renderChartTables(positionedText: StructuredTextItem[]): string[] | und
         .length >= 2
   })
   if (!summaryHeader) {
-    return renderPositionedChartTables(positionedText)
+    return renderPositionedChartTables(positionedText, positionedGraphics)
   }
 
   const summaryColumns = summaryHeader.items
@@ -1933,7 +2039,7 @@ function renderChartTables(positionedText: StructuredTextItem[]): string[] | und
       && line.items.filter(item => numericValue(item.str)).length >= summaryColumns.length)
     .sort((left, right) => right.y - left.y)
   if (summaryRows.length < 2) {
-    return renderPositionedChartTables(positionedText)
+    return renderPositionedChartTables(positionedText, positionedGraphics)
   }
   const summaryBody = summaryRows.map((line) => {
     const label = line.items
@@ -1998,7 +2104,7 @@ function renderChartTables(positionedText: StructuredTextItem[]): string[] | und
     .filter(([, series]) => series.length >= 2 && series.every(entry => entry.values.length >= 3))
     .sort((left, right) => left[0] - right[0])
   if (numericCharts.length < 2) {
-    return renderPositionedChartTables(positionedText)
+    return renderPositionedChartTables(positionedText, positionedGraphics)
   }
 
   const chartTables = numericCharts.map(([start, series], chartIndex) => {
@@ -2115,7 +2221,7 @@ function renderChartTables(positionedText: StructuredTextItem[]): string[] | und
     }
   }).filter(chart => chart.rows.length >= 2)
   if (categoricalCharts.length < 2) {
-    return renderPositionedChartTables(positionedText)
+    return renderPositionedChartTables(positionedText, positionedGraphics)
   }
 
   const sectionHeading = visibleText
@@ -2155,10 +2261,12 @@ interface PositionedChartTable {
   subtitle?: string
   header: string[]
   rows: string[][]
+  outlinedCategories: Array<{ width: number, subpathCount: number }>
 }
 
 function renderPositionedChartTables(
   positionedText: StructuredTextItem[],
+  positionedGraphics: PositionedGraphic[],
 ): string[] | undefined {
   const visibleRuns = positionedText.filter(run => run.str.trim().length > 0)
   if (visibleRuns.length < 20) {
@@ -2254,6 +2362,7 @@ function renderPositionedChartTables(
     region,
     visibleRuns,
     medianFontSize,
+    positionedGraphics,
   ))
   const knownCategories = new Map<string, string[]>()
   for (const chart of chartTables) {
@@ -2262,6 +2371,27 @@ function renderPositionedChartTables(
     const known = knownCategories.get(dimension) ?? []
     if (categories.length > known.length) {
       knownCategories.set(dimension, categories)
+    }
+  }
+  const knownCategorySets = [...knownCategories.values()]
+  for (const chart of chartTables) {
+    if (
+      chart.rows.length < 3
+      || chart.rows.some(row => row[0])
+      || chart.outlinedCategories.length !== chart.rows.length
+    ) {
+      continue
+    }
+    const recoveredCategories = recoverOutlinedCategoryLabels(
+      chart.outlinedCategories,
+      knownCategorySets,
+      visibleRuns,
+    )
+    if (recoveredCategories) {
+      chart.rows = chart.rows.map((row, rowIndex) => [
+        recoveredCategories[rowIndex]!,
+        ...row.slice(1),
+      ])
     }
   }
   for (const chart of chartTables) {
@@ -2364,12 +2494,18 @@ function extractPositionedChartTable(
   region: PositionedChartRegion,
   visibleRuns: StructuredTextItem[],
   medianFontSize: number,
+  positionedGraphics: PositionedGraphic[],
 ): PositionedChartTable {
   const regionRuns = visibleRuns.filter(run =>
     run.x >= region.left
     && run.x < region.right
     && run.y < region.top
     && run.y > region.bottom)
+  const regionGraphics = positionedGraphics.filter(graphic =>
+    (graphic.left + graphic.right) / 2 >= region.left
+    && (graphic.left + graphic.right) / 2 < region.right
+    && (graphic.top + graphic.bottom) / 2 < region.top
+    && (graphic.top + graphic.bottom) / 2 > region.bottom)
   const title = region.title.str.trim()
   const subtitleRun = regionRuns.find(run => /^\(.+\)$/.test(run.str.trim()))
   const legendLine = groupPositionedLines(regionRuns.filter(run =>
@@ -2412,6 +2548,7 @@ function extractPositionedChartTable(
       && Math.abs(candidate.x - run.x) <= 0.5
       && Math.abs(candidate.y - run.y) <= 0.5) === runIndex)
   const yAxisTicks = new Set<number>()
+  const yAxisTickRuns: StructuredTextItem[] = []
   const numericXGroups: Array<{ right: number, runs: StructuredTextItem[] }> = []
   for (const numericRun of expandedNumericRuns) {
     const numericRunRight = numericRun.x + numericRun.width
@@ -2431,7 +2568,10 @@ function extractPositionedChartTable(
       && group.runs.length >= 4
       && Math.max(...baselines) - Math.min(...baselines) > (region.top - region.bottom) * 0.3
     ) {
-      group.runs.forEach(run => yAxisTicks.add(expandedNumericRuns.indexOf(run)))
+      group.runs.forEach((run) => {
+        yAxisTicks.add(expandedNumericRuns.indexOf(run))
+        yAxisTickRuns.push(run)
+      })
     }
   }
   const xAxisTicks = new Set<number>()
@@ -2449,6 +2589,27 @@ function extractPositionedChartTable(
   }
   const valueRuns = expandedNumericRuns.filter((_, runIndex) =>
     !yAxisTicks.has(runIndex) && !xAxisTicks.has(runIndex))
+  const outlinedCategories = regionGraphics
+    .filter((graphic) => {
+      const width = graphic.right - graphic.left
+      const height = graphic.top - graphic.bottom
+      const centerY = (graphic.top + graphic.bottom) / 2
+      return graphic.serializedPathLength >= 100
+        && graphic.subpathCount >= 3
+        && width >= medianFontSize * 2
+        && width <= medianFontSize * 12
+        && height >= medianFontSize * 2
+        && height <= medianFontSize * 12
+        && width / height >= 0.5
+        && width / height <= 2
+        && centerY < region.bottom + (region.top - region.bottom) * 0.4
+    })
+    .sort((left, right) =>
+      (left.left + left.right) / 2 - (right.left + right.right) / 2)
+    .map(graphic => ({
+      width: graphic.right - graphic.left,
+      subpathCount: graphic.subpathCount,
+    }))
 
   const categoryRuns = regionRuns.filter(run =>
     run.y < region.bottom + (region.top - region.bottom) * 0.25
@@ -2473,7 +2634,13 @@ function extractPositionedChartTable(
         .sort((left, right) => left.x - right.x)
       return [categoryRun.str.trim(), ...series.map((_, seriesIndex) => values[seriesIndex]?.str ?? '')]
     })
-    return { title, subtitle: subtitleRun?.str, header: ['Category', ...series], rows }
+    return {
+      title,
+      subtitle: subtitleRun?.str,
+      header: ['Category', ...series],
+      rows,
+      outlinedCategories,
+    }
   }
 
   const monthRuns = categoryRuns.flatMap((run) => {
@@ -2522,6 +2689,40 @@ function extractPositionedChartTable(
       return { label, center }
     }).sort((left, right) => left.center - right.center)
   }
+  if (categories.length < 3) {
+    const diagonalCategoryGroups: Array<{
+      anchor: number
+      runs: StructuredTextItem[]
+    }> = []
+    for (const categoryRun of categoryRuns
+      .filter(run => /[a-z]/i.test(run.str) && run.str.length <= 60)
+      .sort((left, right) => left.x - right.x)) {
+      const group = diagonalCategoryGroups.find(candidate =>
+        Math.abs(candidate.anchor - categoryRun.x) <= medianFontSize * 3)
+      if (group) {
+        group.runs.push(categoryRun)
+        group.anchor = group.runs.reduce((sum, run) => sum + run.x, 0) / group.runs.length
+      }
+      else {
+        diagonalCategoryGroups.push({ anchor: categoryRun.x, runs: [categoryRun] })
+      }
+    }
+    const diagonalCategorySpan = diagonalCategoryGroups.length < 2
+      ? 0
+      : diagonalCategoryGroups.at(-1)!.anchor - diagonalCategoryGroups[0]!.anchor
+    if (
+      diagonalCategoryGroups.length >= 3
+      && diagonalCategorySpan >= (region.right - region.left) * 0.3
+    ) {
+      categories = diagonalCategoryGroups.map(group => ({
+        label: group.runs
+          .sort((left, right) => right.y - left.y)
+          .map(run => run.str.trim())
+          .join(' '),
+        center: group.anchor,
+      }))
+    }
+  }
 
   const orderedValues = [...valueRuns].sort((left, right) => left.x - right.x)
   const expectedValueCount = categories.length * series.length
@@ -2548,20 +2749,389 @@ function extractPositionedChartTable(
     valuesByCategory.push(...categories.map((_, rowIndex) =>
       orderedValues.slice(rowIndex * series.length, (rowIndex + 1) * series.length)))
   }
-  const rows = categories.map((category, categoryIndex) => [
+  let rows = categories.map((category, categoryIndex) => [
     category.label,
     ...series.map((_, seriesIndex) => valuesByCategory[categoryIndex]?.[seriesIndex]?.str ?? ''),
   ])
-  return { title, subtitle: subtitleRun?.str, header: ['Category', ...series], rows }
+  let renderedSeries = series
+  const chartHasOnlyEmptyValues = rows.length >= 3
+    && rows.every(row => row.slice(1).every(value => !value))
+  if (
+    chartHasOnlyEmptyValues
+    && yAxisTickRuns.length >= 3
+    && regionGraphics.length > 0
+  ) {
+    const horizontalGridLines = regionGraphics.filter((graphic) => {
+      const width = graphic.right - graphic.left
+      const height = graphic.top - graphic.bottom
+      return width >= (region.right - region.left) * 0.4
+        && height <= medianFontSize
+    })
+    const calibratedTicks = yAxisTickRuns.flatMap((run) => {
+      const value = chartNumericNumber(run.str)
+      if (value === undefined) {
+        return []
+      }
+      const textCenter = run.y + run.height / 2
+      const gridLine = [...horizontalGridLines]
+        .sort((left, right) =>
+          Math.abs((left.top + left.bottom) / 2 - textCenter)
+          - Math.abs((right.top + right.bottom) / 2 - textCenter))[0]
+      const gridLineCenter = gridLine ? (gridLine.top + gridLine.bottom) / 2 : textCenter
+      const y = gridLine && Math.abs(gridLineCenter - textCenter) <= run.fontSize * 2
+        ? gridLineCenter
+        : textCenter
+      return [{ run, value, y }]
+    }).sort((left, right) => left.y - right.y)
+    const lowestTick = calibratedTicks[0]
+    const highestTick = calibratedTicks.at(-1)
+    const tickYSpan = highestTick && lowestTick ? highestTick.y - lowestTick.y : 0
+    const tickValueSpan = highestTick && lowestTick ? highestTick.value - lowestTick.value : 0
+    const valuePerPoint = tickYSpan > 0 ? tickValueSpan / tickYSpan : 0
+    const maximumCalibrationError = Math.max(
+      Math.abs(tickValueSpan) * 0.02,
+      Number.EPSILON,
+    )
+    const calibrationIsLinear = calibratedTicks.length >= 3
+      && valuePerPoint > 0
+      && calibratedTicks.every(tick => Math.abs(
+        lowestTick!.value + (tick.y - lowestTick!.y) * valuePerPoint - tick.value,
+      ) <= maximumCalibrationError)
+    const seriesColors = legendLine?.items.map((legendRun) => {
+      const legendCenterY = legendRun.y + legendRun.height / 2
+      return [...regionGraphics]
+        .filter(graphic =>
+          graphic.right <= legendRun.x + medianFontSize
+          && legendRun.x - graphic.right <= medianFontSize * 8
+          && Math.abs((graphic.top + graphic.bottom) / 2 - legendCenterY) <= medianFontSize * 2
+          && graphic.color)
+        .sort((left, right) =>
+          legendRun.x - left.right - (legendRun.x - right.right))[0]
+        ?.color
+    }) ?? []
+    const seriesColorsAreDistinct = seriesColors.length === series.length
+      && seriesColors.every(Boolean)
+      && new Set(seriesColors).size === series.length
+    const markerGraphics = lowestTick && highestTick
+      ? regionGraphics.filter((graphic) => {
+          const width = graphic.right - graphic.left
+          const height = graphic.top - graphic.bottom
+          const centerY = (graphic.top + graphic.bottom) / 2
+          return width >= medianFontSize * 0.4
+            && width <= medianFontSize * 2.5
+            && height >= medianFontSize * 0.4
+            && height <= medianFontSize * 2.5
+            && width / height >= 0.5
+            && width / height <= 2
+            && centerY >= lowestTick.y - medianFontSize
+            && centerY <= highestTick.y + medianFontSize
+        })
+      : []
+    const categorySpacing = categories.slice(1).reduce((minimum, category, categoryIndex) =>
+      Math.min(minimum, category.center - categories[categoryIndex]!.center), Infinity)
+    const markerTolerance = Number.isFinite(categorySpacing)
+      ? Math.max(medianFontSize * 2, categorySpacing * 0.35)
+      : medianFontSize * 4
+    if (calibrationIsLinear && (series.length === 1 || seriesColorsAreDistinct)) {
+      const estimatedValues = categories.map(category => series.map((_, seriesIndex) => {
+        const expectedColor = seriesColors[seriesIndex]
+        const marker = [...markerGraphics]
+          .filter((graphic) => {
+            const centerX = (graphic.left + graphic.right) / 2
+            return Math.abs(centerX - category.center) <= markerTolerance
+              && (series.length === 1 || graphic.color === expectedColor)
+          })
+          .sort((left, right) =>
+            Math.abs((left.left + left.right) / 2 - category.center)
+            - Math.abs((right.left + right.right) / 2 - category.center))[0]
+        if (!marker) {
+          return undefined
+        }
+        const markerCenterY = (marker.top + marker.bottom) / 2
+        return lowestTick!.value + (markerCenterY - lowestTick!.y) * valuePerPoint
+      }))
+      const minimumSeriesMarkers = Math.min(3, categories.length)
+      const hasEnoughMarkers = series.every((_, seriesIndex) =>
+        estimatedValues.filter(values => values[seriesIndex] !== undefined).length >= minimumSeriesMarkers)
+      && estimatedValues.every(values => values.some(value => value !== undefined))
+      if (hasEnoughMarkers) {
+        const tickLabels = calibratedTicks.map(tick => tick.run.str.trim())
+        const currency = tickLabels.find(label => /[$€£]/.test(label))?.match(/[$€£]/)?.[0] ?? ''
+        const percentage = tickLabels.some(label => label.endsWith('%'))
+        const decimalPlaces = Math.max(0, ...tickLabels.map((label) => {
+          const decimal = /\.(\d+)/.exec(label)
+          return decimal?.[1]?.length ?? 0
+        }))
+        rows = categories.map((category, categoryIndex) => [
+          category.label,
+          ...estimatedValues[categoryIndex]!.map((value) => {
+            if (value === undefined) {
+              return ''
+            }
+            const absoluteValue = Math.abs(value).toFixed(decimalPlaces)
+            return `${value < 0 ? '-' : ''}${currency}${absoluteValue}${percentage ? '%' : ''}`
+          }),
+        ])
+        renderedSeries = series.map(label => `${label} (estimated)`)
+      }
+    }
+  }
+  return {
+    title,
+    subtitle: subtitleRun?.str,
+    header: ['Category', ...renderedSeries],
+    rows,
+    outlinedCategories,
+  }
 }
 
 function chartNumericValue(value: string): boolean {
   return /^(?:[-+]?[$€£]?\(?\d[\d,.]*\)?%?|[–—-])$/.test(value.trim())
 }
 
+function chartNumericNumber(value: string): number | undefined {
+  const normalized = value.trim()
+  if (!chartNumericValue(normalized) || /^[–—-]$/.test(normalized)) {
+    return undefined
+  }
+  const negative = normalized.includes('(') && normalized.includes(')')
+  const parsed = Number(normalized.replaceAll(/[$€£,%()+]/g, ''))
+  return Number.isFinite(parsed) ? parsed * (negative ? -1 : 1) : undefined
+}
+
 function chartPackedNumericValues(value: string): string[] {
   const values = value.trim().split(/\s+/)
   return values.length >= 2 && values.every(chartNumericValue) ? values : []
+}
+
+function countSerializedPathSubpaths(serializedPaths: unknown): number {
+  if (!Array.isArray(serializedPaths)) {
+    return 0
+  }
+  // PDF.js serializes move, line, cubic, quadratic, and close operations with these arities.
+  const operationArgumentCounts = [2, 2, 6, 4, 0]
+  const moveOperation = 0
+  let subpathCount = 0
+  for (const serializedPath of serializedPaths) {
+    if (!serializedPath || typeof serializedPath.length !== 'number') {
+      return 0
+    }
+    for (let offset = 0; offset < serializedPath.length;) {
+      const operation = serializedPath[offset++]
+      const argumentCount = operationArgumentCounts[operation]
+      if (argumentCount === undefined) {
+        return 0
+      }
+      if (operation === moveOperation) {
+        subpathCount++
+      }
+      offset += argumentCount
+    }
+  }
+  return subpathCount
+}
+
+function recoverOutlinedCategoryLabels(
+  outlinedCategories: Array<{ width: number, subpathCount: number }>,
+  knownCategorySets: string[][],
+  visibleRuns: StructuredTextItem[],
+): string[] | undefined {
+  if (outlinedCategories.length > 12) {
+    return undefined
+  }
+  const textWidths = new Map<string, number[]>()
+  for (const run of visibleRuns) {
+    const tokens = categoryLabelTokens(run.str)
+    if (tokens.length === 0 || run.fontSize <= 0 || run.width <= 0) {
+      continue
+    }
+    const key = tokens.join(' ')
+    const widths = textWidths.get(key) ?? []
+    widths.push(run.width / run.fontSize)
+    textWidths.set(key, widths)
+  }
+  const widthSamples = [...textWidths].map(([key, widths]) => ({
+    tokens: key.split(' '),
+    width: medianNumber(widths),
+  }))
+  const distinctCategorySets = knownCategorySets.filter((categories, categorySetIndex, sets) => {
+    if (
+      categories.length !== outlinedCategories.length
+      || new Set(categories.map(category => category.toLowerCase())).size !== categories.length
+    ) {
+      return false
+    }
+    const key = [...categories].sort().join('\n').toLowerCase()
+    return sets.findIndex(candidate =>
+      candidate.length === categories.length
+      && [...candidate].sort().join('\n').toLowerCase() === key) === categorySetIndex
+  })
+  const matches = distinctCategorySets.flatMap((categories) => {
+    const categoryShapes = categories.flatMap((label) => {
+      const width = estimateCategoryLabelWidth(label, widthSamples)
+      const subpathCount = estimateLatinLabelSubpaths(label)
+      return width === undefined || subpathCount === undefined
+        ? []
+        : [{ label, width, subpathCount }]
+    })
+    if (categoryShapes.length !== categories.length) {
+      return []
+    }
+    const match = matchOutlinedCategoryShapes(outlinedCategories, categoryShapes)
+    return match ? [match] : []
+  }).sort((left, right) => left.cost - right.cost)
+  if (matches.length === 0) {
+    return undefined
+  }
+  if (matches[1] && matches[1].cost - matches[0]!.cost <= 0.005) {
+    return undefined
+  }
+  return matches[0]!.labels
+}
+
+function categoryLabelTokens(value: string): string[] {
+  return value.toLowerCase().match(/[a-z0-9]+/g) ?? []
+}
+
+function estimateCategoryLabelWidth(
+  label: string,
+  widthSamples: Array<{ tokens: string[], width: number }>,
+): number | undefined {
+  const labelTokens = categoryLabelTokens(label)
+  const estimates: Array<{ width: number, fragments: number } | undefined>
+    = Array.from({ length: labelTokens.length + 1 })
+  estimates[0] = { width: 0, fragments: 0 }
+  for (let tokenIndex = 0; tokenIndex < labelTokens.length; tokenIndex++) {
+    const estimate = estimates[tokenIndex]
+    if (!estimate) {
+      continue
+    }
+    for (const sample of widthSamples) {
+      if (!sample.tokens.every((token, sampleIndex) =>
+        labelTokens[tokenIndex + sampleIndex] === token)) {
+        continue
+      }
+      const nextIndex = tokenIndex + sample.tokens.length
+      const candidate = {
+        width: estimate.width + sample.width,
+        fragments: estimate.fragments + 1,
+      }
+      const current = estimates[nextIndex]
+      if (!current || candidate.fragments < current.fragments) {
+        estimates[nextIndex] = candidate
+      }
+    }
+  }
+  return estimates.at(-1)?.width
+}
+
+function estimateLatinLabelSubpaths(label: string): number | undefined {
+  if (!/^[a-z ]+$/i.test(label)) {
+    return undefined
+  }
+  // Enclosed counters and detached dots produce additional filled subpaths.
+  let subpathCount = 0
+  for (const character of label.replaceAll(' ', '')) {
+    if (character === 'B' || character === 'g') {
+      subpathCount += 3
+    }
+    else if ('abdeijopqABDOPQR'.includes(character)) {
+      subpathCount += 2
+    }
+    else {
+      subpathCount++
+    }
+  }
+  return subpathCount
+}
+
+function matchOutlinedCategoryShapes(
+  outlinedCategories: Array<{ width: number, subpathCount: number }>,
+  categoryShapes: Array<{ label: string, width: number, subpathCount: number }>,
+): { labels: string[], cost: number } | undefined {
+  const categoryCount = outlinedCategories.length
+  const outlinedWidths = outlinedCategories.map(category => category.width).sort((left, right) => left - right)
+  const textWidths = categoryShapes.map(category => category.width).sort((left, right) => left - right)
+  const scale = medianNumber(outlinedWidths.map((width, index) => width / textWidths[index]!))
+  if (!Number.isFinite(scale) || scale <= 0) {
+    return undefined
+  }
+  const stateCount = 1 << categoryCount
+  const costs = new Float64Array(stateCount)
+  costs.fill(Number.POSITIVE_INFINITY)
+  costs[0] = 0
+  const selectedCategories = Array.from(
+    { length: categoryCount },
+    () => new Int16Array(stateCount).fill(-1),
+  )
+  for (let mask = 0; mask < stateCount; mask++) {
+    if (!Number.isFinite(costs[mask]!)) {
+      continue
+    }
+    const outlinedIndex = countSetBits(mask)
+    if (outlinedIndex >= categoryCount) {
+      continue
+    }
+    const outlined = outlinedCategories[outlinedIndex]!
+    for (let categoryIndex = 0; categoryIndex < categoryCount; categoryIndex++) {
+      const categoryBit = 1 << categoryIndex
+      if (mask & categoryBit) {
+        continue
+      }
+      const category = categoryShapes[categoryIndex]!
+      const widthError = (outlined.width - category.width * scale) / (category.width * scale)
+      const subpathError = outlined.subpathCount - category.subpathCount
+      const nextMask = mask | categoryBit
+      const cost = costs[mask]! + widthError ** 2 + subpathError ** 2 * 0.01
+      if (cost < costs[nextMask]!) {
+        costs[nextMask] = cost
+        selectedCategories[outlinedIndex]![nextMask] = categoryIndex
+      }
+    }
+  }
+  let mask = stateCount - 1
+  const labels = Array.from<string>({ length: categoryCount })
+  let maximumWidthError = 0
+  let maximumSubpathError = 0
+  for (let outlinedIndex = categoryCount - 1; outlinedIndex >= 0; outlinedIndex--) {
+    const categoryIndex = selectedCategories[outlinedIndex]![mask]
+    if (categoryIndex === undefined || categoryIndex < 0) {
+      return undefined
+    }
+    const outlined = outlinedCategories[outlinedIndex]!
+    const category = categoryShapes[categoryIndex]!
+    maximumWidthError = Math.max(
+      maximumWidthError,
+      Math.abs(outlined.width - category.width * scale) / (category.width * scale),
+    )
+    maximumSubpathError = Math.max(
+      maximumSubpathError,
+      Math.abs(outlined.subpathCount - category.subpathCount),
+    )
+    labels[outlinedIndex] = category.label
+    mask ^= 1 << categoryIndex
+  }
+  if (maximumWidthError > 0.08 || maximumSubpathError > 1) {
+    return undefined
+  }
+  return { labels, cost: costs.at(-1)! }
+}
+
+function countSetBits(value: number): number {
+  let count = 0
+  while (value > 0) {
+    value &= value - 1
+    count++
+  }
+  return count
+}
+
+function medianNumber(values: number[]): number {
+  const sorted = [...values].sort((left, right) => left - right)
+  const middle = Math.floor(sorted.length / 2)
+  return sorted.length % 2 === 0
+    ? (sorted[middle - 1]! + sorted[middle]!) / 2
+    : sorted[middle]!
 }
 
 function chartDimension(title: string): string {

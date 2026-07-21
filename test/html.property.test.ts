@@ -12,6 +12,7 @@ interface AuthoredRun {
   x: number
   y: number
   size: number
+  matrix?: [number, number, number, number, number, number]
 }
 
 function escapePdfString(value: string): string {
@@ -21,6 +22,7 @@ function escapePdfString(value: string): string {
 function authorPdf(
   runs: AuthoredRun[],
   additionalPages: AuthoredRun[][] = [],
+  pageCommands: string[] = [],
 ): Uint8Array {
   const pages = [runs, ...additionalPages]
   const fontReference = 3 + pages.length * 2
@@ -31,8 +33,9 @@ function authorPdf(
   ]
   for (const [pageIndex, pageRuns] of pages.entries()) {
     const content = pageRuns
-      .map(({ text, x, y, size }) =>
-        `BT /F1 ${size} Tf 1 0 0 1 ${x} ${y} Tm (${escapePdfString(text)}) Tj ET`)
+      .map(({ text, x, y, size, matrix }) =>
+        `BT /F1 ${size} Tf ${(matrix ?? [1, 0, 0, 1, x, y]).join(' ')} Tm (${escapePdfString(text)}) Tj ET`)
+      .concat(pageCommands[pageIndex] ?? '')
       .join('\n')
     const contentReference = pageReferences[pageIndex]! + 1
     objects.push(
@@ -2221,6 +2224,175 @@ describe('html extraction properties', () => {
     for (const [title] of chartTitles) {
       expect(html[0]).toContain(`<h2>${title}</h2>`)
     }
+  })
+
+  it('aligns staggered diagonal chart labels with their exposed values', async () => {
+    const chartTitles = [
+      ['Average Concessions (% of asking rent)', 50, 700],
+      ['Average Rent by Unit Type', 350, 700],
+      ['Lease Count by Calendar Month', 50, 500],
+      ['Market Time by Calendar Month', 350, 500],
+      ['Available Homes by Portfolio Region', 50, 300],
+      ['Average Rent by Portfolio Region', 350, 300],
+    ] as const
+    const categories = ['Allaso High Desert', 'Olympus Latitude', 'SkyStone Apartments', 'Olympus Northpoint', 'Allaso Vineyards']
+    const values = ['0.36%', '0.90%', '1.43%', '1.52%', '3.23%']
+    const chartRuns: AuthoredRun[] = [
+      { text: 'Leasing Dashboard', x: 30, y: 820, size: 8 },
+      ...Array.from({ length: 4 }, (_, captionIndex) => ({
+        text: `Dashboard note ${captionIndex + 1}`,
+        x: 30 + captionIndex * 100,
+        y: 780,
+        size: 4,
+      })),
+      ...chartTitles.map(([text, x, y]) => ({ text, x, y, size: 7 })),
+      ...categories.map((text, categoryIndex) => {
+        const x = 75 + categoryIndex * 45
+        const y = 525 + categoryIndex * 3
+        return {
+          text,
+          x,
+          y,
+          size: 4,
+          matrix: [0.7, 0.7, -0.7, 0.7, x, y] as AuthoredRun['matrix'],
+        }
+      }),
+      ...values.map((text, valueIndex) => ({
+        text,
+        x: 75 + valueIndex * 45,
+        y: 610,
+        size: 4,
+      })),
+    ]
+    const { html } = await extractHTML(authorPdf(chartRuns))
+    const rows = htmlRows(html[0]!).map(htmlCells)
+
+    for (const [categoryIndex, category] of categories.entries()) {
+      expect(rows).toContainEqual([category, values[categoryIndex]!])
+    }
+  })
+
+  it('recovers outlined chart labels from matching text elsewhere on the page', async () => {
+    const chartTitles = [
+      ['Average Concessions (% of asking rent)', 50, 700],
+      ['Average Days by Property', 350, 700],
+      ['Lease Count by Calendar Month', 50, 500],
+      ['Market Time by Calendar Month', 350, 500],
+      ['Available Homes by Portfolio Region', 50, 300],
+      ['Average Rent by Portfolio Region', 350, 300],
+    ] as const
+    const categoryShapes = [
+      { label: 'Allaso High Desert', width: 23.04, subpathCount: 25, value: '0.36%' },
+      { label: 'Olympus Latitude', width: 22.24, subpathCount: 21, value: '0.90%' },
+      { label: 'SkyStone Apartments', width: 27.20, subpathCount: 24, value: '1.43%' },
+      { label: 'Olympus Northpoint', width: 25.92, subpathCount: 23, value: '1.52%' },
+      { label: 'Allaso Vineyards', width: 20.64, subpathCount: 22, value: '3.23%' },
+    ]
+    const chartRuns: AuthoredRun[] = [
+      { text: 'Leasing Dashboard', x: 30, y: 820, size: 8 },
+      ...chartTitles.map(([text, x, y]) => ({ text, x, y, size: 7 })),
+      ...categoryShapes.flatMap(({ label }, categoryIndex) => [
+        { text: label, x: 335, y: 650 - categoryIndex * 20, size: 4 },
+        { text: String(60 + categoryIndex), x: 510, y: 650 - categoryIndex * 20, size: 4 },
+      ]),
+      ...categoryShapes.map(({ value }, categoryIndex) => ({
+        text: value,
+        x: 70 + categoryIndex * 45,
+        y: 610,
+        size: 4,
+      })),
+    ]
+    const outlinedLabels = categoryShapes.map(({ width, subpathCount }, categoryIndex) => {
+      const left = 70 + categoryIndex * 45 - width / 2
+      const bottom = 530
+      const contours = Array.from({ length: subpathCount }, (_, contourIndex) => {
+        const progress = subpathCount === 1 ? 0 : contourIndex / (subpathCount - 1)
+        const x = left + progress * (width - 0.2)
+        const y = bottom + progress * (width - 0.2)
+        return `${x} ${y} m ${x + 0.2} ${y} l ${x + 0.2} ${y + 0.1} l ${x + 0.15} ${y + 0.2} l ${x + 0.1} ${y + 0.15} l ${x + 0.05} ${y + 0.2} l ${x} ${y + 0.1} l h`
+      })
+      return `${contours.join('\n')} f`
+    }).join('\n')
+    const { html } = await extractHTML(authorPdf(
+      chartRuns,
+      [],
+      [`0.35 0.35 0.35 rg\n${outlinedLabels}`],
+    ))
+    const rows = htmlRows(html[0]!).map(htmlCells)
+
+    for (const { label, value } of categoryShapes) {
+      expect(rows).toContainEqual([label, value])
+    }
+  })
+
+  it('estimates available line chart values from calibrated vector markers', async () => {
+    const chartTitles = [
+      ['Asking vs Effective Rent PSF By Month', 50, 700],
+      ['Average Rent by Unit Type by Month', 350, 700],
+      ['Lease Count by Calendar Month', 50, 500],
+      ['Market Time by Calendar Month', 350, 500],
+      ['Available Homes by Portfolio Region', 50, 300],
+      ['Average Concessions by Portfolio Region', 350, 300],
+    ] as const
+    const chartRuns: AuthoredRun[] = [
+      { text: 'Leasing Dashboard', x: 30, y: 820, size: 8 },
+      ...chartTitles.map(([text, x, y]) => ({ text, x, y, size: 7 })),
+      { text: '(closed listings)', x: 140, y: 686, size: 4 },
+      { text: 'Average Asking PSF', x: 115, y: 675, size: 4 },
+      { text: 'Effective Rent PSF', x: 215, y: 675, size: 4 },
+      ...['$0.00', '$0.50', '$1.00', '$1.50', '$2.00', '$2.50'].map((text, tickIndex) => ({
+        text,
+        x: 35,
+        y: 518 + tickIndex * 28,
+        size: 4,
+      })),
+      ...['Jan', 'Feb', 'Mar', 'Apr'].map((text, monthIndex) => ({
+        text,
+        x: 105 + monthIndex * 45,
+        y: 515,
+        size: 4,
+      })),
+    ]
+    const gridLines = Array.from({ length: 6 }, (_, tickIndex) => {
+      const y = 520 + tickIndex * 28
+      return `70 ${y} m 285 ${y} l S`
+    }).join('\n')
+    const askingValues = [1.5, undefined, 2, 1.5]
+    const effectiveValues = [1.25, 1.75, 1.5, 2]
+    const markerCommands = [
+      '0.25 0.45 0.8 RG',
+      '92 677 m 110 677 l S',
+      ...askingValues.flatMap((value, valueIndex) => {
+        if (value === undefined) {
+          return []
+        }
+        const x = 107 + valueIndex * 45
+        const y = 520 + value * 56
+        return [`${x - 2} ${y - 2} 4 4 re S`]
+      }),
+      '0.2 0.15 0.75 RG',
+      '192 677 m 210 677 l S',
+      ...effectiveValues.map((value, valueIndex) => {
+        const x = 107 + valueIndex * 45
+        const y = 520 + value * 56
+        return `${x - 2} ${y - 2} 4 4 re S`
+      }),
+    ].join('\n')
+    const { html } = await extractHTML(authorPdf(
+      chartRuns,
+      [],
+      [`0.8 G 0.5 w\n${gridLines}\n${markerCommands}`],
+    ))
+    const rows = htmlRows(html[0]!).map(htmlCells)
+
+    expect(rows).toContainEqual([
+      'Category',
+      'Average Asking PSF (estimated)',
+      'Effective Rent PSF (estimated)',
+    ])
+    expect(rows).toContainEqual(['Jan', '$1.50', '$1.25'])
+    expect(rows).toContainEqual(['Feb', '', '$1.75'])
+    expect(rows).toContainEqual(['Apr', '$1.50', '$2.00'])
   })
 
   it('reconstructs a filtered matrix with grouped metric bands', async () => {
