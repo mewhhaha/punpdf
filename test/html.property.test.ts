@@ -116,6 +116,57 @@ describe('html extraction properties', () => {
     }
   })
 
+  it('spans property details across repeated unit-type rows', async () => {
+    const headers = [
+      'Property',
+      'Active Concessions',
+      'Type',
+      '# Leased',
+      'D',
+      'Leased Rents',
+      '$ D',
+      '% D',
+      '# New',
+      'D',
+      'New Listing Rents',
+      '# Active',
+      'D',
+      'Asking Rents',
+      'Exposure',
+    ]
+    const columnStarts = [30, 140, 250, 275, 300, 322, 352, 378, 404, 426, 447, 480, 500, 520, 555]
+    const unitRows = [
+      ['Studio', '0', '1', '$1,400', '$0', '0.0%', '0', '0', '$1,450', '3', '0', '$1,500', '5.0%'],
+      ['1 BR', '2', '1', '$1,600', '$50', '3.2%', '1', '1', '$1,650', '4', '1', '$1,700', '6.0%'],
+      ['2 BR', '3', '-1', '$1,900', '-$25', '-1.3%', '1', '0', '$1,925', '5', '-1', '$2,000', '7.0%'],
+      ['Studio', '0', '0', '$1,425', '$0', '0.0%', '0', '0', '$1,475', '2', '0', '$1,525', '4.0%'],
+      ['1 BR', '1', '-1', '$1,625', '-$25', '-1.5%', '1', '0', '$1,675', '3', '-1', '$1,725', '5.0%'],
+      ['2 BR', '2', '1', '$1,925', '$25', '1.3%', '2', '1', '$1,950', '4', '1', '$2,025', '6.0%'],
+    ]
+    const propertyRuns: AuthoredRun[] = [
+      { text: 'North Homes', x: 30, y: 762, size: 4 },
+      { text: '1 Main Street', x: 30, y: 756, size: 4 },
+      { text: 'One month free', x: 140, y: 752, size: 4 },
+      { text: 'South Homes', x: 30, y: 744, size: 4 },
+      { text: '2 Main Street', x: 30, y: 738, size: 4 },
+      { text: 'Two weeks free', x: 140, y: 734, size: 4 },
+    ]
+    const { html } = await extractHTML(authorPdf([
+      ...tableRuns([headers], { size: 3, starts: columnStarts, top: 780 }),
+      ...tableRuns(unitRows, { starts: columnStarts.slice(2), top: 760 }),
+      ...propertyRuns,
+    ]))
+    const rows = htmlRows(html[0]!)
+
+    expect(htmlCells(rows[0]!)).toEqual(headers)
+    expect(html[0]).toContain('<th rowspan="3" scope="rowgroup">North Homes<br>1 Main Street</th>')
+    expect(html[0]).toContain('<td rowspan="3">One month free</td>')
+    expect(html[0]).toContain('<th rowspan="3" scope="rowgroup">South Homes<br>2 Main Street</th>')
+    expect(html[0]).toContain('<td rowspan="3">Two weeks free</td>')
+    expect(htmlCells(rows[2]!)).toEqual(unitRows[1])
+    expect(htmlCells(rows[5]!)).toEqual(unitRows[4])
+  })
+
   it('uses a wide record as the schema when detail rows are sparse', async () => {
     const headers = [
       'Unit',
@@ -832,7 +883,7 @@ describe('html extraction properties', () => {
     expect(ageRangeHTML).not.toContain('>1/2<')
   })
 
-  it('renders adjacent income tables as repeated three-column groups', async () => {
+  it('renders adjacent income tables as independent three-column tables', async () => {
     const starts = [30, 180, 260, 310, 460, 540]
     const { html } = await extractHTML(authorPdf([
       { text: 'Demographic statistics report', x: 190, y: 820, size: 10 },
@@ -843,12 +894,14 @@ describe('html extraction properties', () => {
       ], { size: 4, starts, top: 780 }),
     ]))
 
-    expect(html[0]).toContain('<th colspan="3" scope="colgroup">Individual income:</th>')
-    expect(html[0]).toContain('<th colspan="3" scope="colgroup">Household income:</th>')
-    expect(html[0]).toContain(
-      '<th scope="col">Category</th><th scope="col">Count</th><th scope="col">Percentage</th>'
-      + '<th scope="col">Category</th><th scope="col">Count</th><th scope="col">Percentage</th>',
-    )
+    const renderedRows = htmlRows(html[0]!).map(htmlCells)
+
+    expect(html[0]).toContain('<div class="parallel-tables" style="--parallel-count: 2">')
+    expect(html[0]).toContain('<h3>Individual income:</h3>')
+    expect(html[0]).toContain('<h3>Household income:</h3>')
+    expect(renderedRows.filter(row => row.join('|') === 'Category|Count|Percentage')).toHaveLength(2)
+    expect(renderedRows).toContainEqual(['Below 10,000', '211', '23.19%'])
+    expect(renderedRows).toContainEqual(['Below 10,000', '24', '4.42%'])
   })
 
   it('keeps report context outside repeated metric column groups', async () => {
@@ -2054,6 +2107,51 @@ describe('html extraction properties', () => {
     expect(renderedRows).toContainEqual(['05/14', '319,573.35'])
   })
 
+  it('separates repeated column groups after reconstructing their positioned headers', async () => {
+    const runs: AuthoredRun[] = [
+      { text: 'Income statistics', x: 30, y: 825, size: 12 },
+      { text: 'Category', x: 38, y: 790, size: 8 },
+      { text: 'Count', x: 215, y: 790, size: 8 },
+      { text: 'Percentage', x: 264, y: 790, size: 8 },
+      { text: 'Category', x: 308, y: 790, size: 8 },
+      { text: 'Count', x: 491, y: 790, size: 8 },
+      { text: 'Percentage', x: 539, y: 790, size: 8 },
+      { text: 'Individual income:', x: 32, y: 770, size: 8 },
+      { text: 'Household income:', x: 308, y: 766, size: 8 },
+      ...tableRuns([
+        ['Below 10,000', '21', '21.00%', '', '', ''],
+        ['10,000 - 20,000', '18', '18.00%', 'Below 10,000', '4', '8.00%'],
+        ['20,001 - 30,000', '16', '16.00%', '10,000 - 20,000', '6', '12.00%'],
+        ['Above 40,000', '45', '45.00%', '20,001 - 30,000', '8', '16.00%'],
+        ['Mean', '32500.00', 'N/A', 'Above 40,000', '20', '40.00%'],
+        ['', '', '', 'Mean', '48750.00', 'N/A%'],
+      ], {
+        size: 8,
+        starts: [32, 228, 284, 308, 503, 559],
+        top: 750,
+      }),
+    ]
+    const { html } = await extractHTML(authorPdf(runs))
+    const renderedRows = htmlRows(html[0]!).map(htmlCells)
+
+    expect(html[0]).toContain('<div class="parallel-tables" style="--parallel-count: 2">')
+    expect(html[0]).toContain('<h3>Individual income:</h3>')
+    expect(html[0]).toContain('<h3>Household income:</h3>')
+    expect(renderedRows).toContainEqual(['Category', 'Count', 'Percentage'])
+    expect(renderedRows).toContainEqual(['Below 10,000', '21', '21.00%'])
+    expect(renderedRows).toContainEqual(['Below 10,000', '4', '8.00%'])
+    expect(renderedRows).toContainEqual(['Mean', '32500.00', 'N/A'])
+    expect(renderedRows).toContainEqual(['Mean', '48750.00', 'N/A%'])
+    expect(renderedRows).not.toContainEqual([
+      '10,000 - 20,000',
+      '18',
+      '18.00%',
+      'Below 10,000',
+      '4',
+      '8.00%',
+    ])
+  })
+
   it('renders alphabetic outline entries as a nested ordered list', async () => {
     const outline = [
       { text: 'Contents', x: 50, y: 810, size: 18 },
@@ -2325,7 +2423,7 @@ describe('html extraction properties', () => {
     }
   })
 
-  it('estimates available line chart values from calibrated vector markers', async () => {
+  it('estimates line chart values and groups repeated months by calendar year', async () => {
     const chartTitles = [
       ['Asking vs Effective Rent PSF By Month', 50, 700],
       ['Average Rent by Unit Type by Month', 350, 700],
@@ -2346,12 +2444,14 @@ describe('html extraction properties', () => {
         y: 518 + tickIndex * 28,
         size: 4,
       })),
-      ...['Jan', 'Feb', 'Mar', 'Apr'].map((text, monthIndex) => ({
+      ...['Nov', 'Dec', 'Jan', 'Feb'].map((text, monthIndex) => ({
         text,
         x: 105 + monthIndex * 45,
         y: 515,
         size: 4,
       })),
+      { text: '2024', x: 126, y: 509, size: 4 },
+      { text: '2025', x: 216, y: 509, size: 4 },
     ]
     const gridLines = Array.from({ length: 6 }, (_, tickIndex) => {
       const y = 520 + tickIndex * 28
@@ -2386,13 +2486,98 @@ describe('html extraction properties', () => {
     const rows = htmlRows(html[0]!).map(htmlCells)
 
     expect(rows).toContainEqual([
-      'Category',
+      'Year',
+      'Month',
       'Average Asking PSF (estimated)',
       'Effective Rent PSF (estimated)',
     ])
-    expect(rows).toContainEqual(['Jan', '$1.50', '$1.25'])
-    expect(rows).toContainEqual(['Feb', '', '$1.75'])
-    expect(rows).toContainEqual(['Apr', '$1.50', '$2.00'])
+    expect(rows).toContainEqual(['2024', 'Nov', '$1.50', '$1.25'])
+    expect(rows).toContainEqual(['2025', 'Jan', '$2.00', '$1.50'])
+    expect(html[0]).toContain('<th rowspan="2" scope="rowgroup">2024</th><th scope="row">Nov</th>')
+    expect(html[0]).toContain('<th rowspan="2" scope="rowgroup">2025</th><th scope="row">Jan</th>')
+  })
+
+  it('estimates grouped bar values when currency labels are outlined paths', async () => {
+    const chartTitles = [
+      ['Two Bedroom Asking vs Effective Rent', 50, 700],
+      ['Three Bedroom Asking vs Effective Rent', 350, 700],
+      ['Lease Count by Calendar Month', 50, 500],
+      ['Market Time by Calendar Month', 350, 500],
+      ['Available Homes by Portfolio Region', 50, 300],
+      ['Average Concessions by Portfolio Region', 350, 300],
+    ] as const
+    const categories = ['North', 'South', 'East', 'West']
+    const askingValues = [1500, 1900, 2100, 2250]
+    const effectiveValues = [1400, 1800, 2050, 2200]
+    const chartRuns: AuthoredRun[] = [
+      { text: 'Leasing Dashboard', x: 30, y: 820, size: 8 },
+      ...Array.from({ length: 8 }, (_, noteIndex) => ({
+        text: `Dashboard note ${noteIndex + 1}`,
+        x: 30 + noteIndex * 55,
+        y: 780,
+        size: 4,
+      })),
+      ...chartTitles.map(([text, x, y]) => ({ text, x, y, size: 7 })),
+      { text: 'Asking', x: 105, y: 675, size: 4 },
+      { text: 'Effective', x: 205, y: 675, size: 4 },
+      ...categories.map((text, categoryIndex) => ({
+        text,
+        x: 95 + categoryIndex * 50,
+        y: 520,
+        size: 4,
+      })),
+    ]
+    const outlinedCurrencyLabel = (
+      x: number,
+      y: number,
+      leadingDigit: number,
+    ) => Array.from({ length: 6 }, (_, glyphIndex) => {
+      const glyphX = x + glyphIndex * 2
+      const glyphY = y - glyphIndex * 2
+      const outerContour = `${glyphX} ${glyphY} 0.8 0.8 re`
+      const innerContour = glyphIndex === 1 && leadingDigit === 2
+        ? ` ${glyphX + 0.2} ${glyphY + 0.2} 0.2 0.2 re`
+        : ''
+      return `${outerContour}${innerContour}`
+    }).join(' ')
+    const gridLines = Array.from({ length: 5 }, (_, lineIndex) => {
+      const x = 70 + lineIndex * 50
+      return `${x} 540 m ${x} 640 l`
+    }).join(' ')
+    const askingBars = askingValues.map((value, categoryIndex) => {
+      const x = 92 + categoryIndex * 50
+      return `${x} 540 6 ${value / 25} re`
+    }).join(' ')
+    const effectiveBars = effectiveValues.map((value, categoryIndex) => {
+      const x = 102 + categoryIndex * 50
+      return `${x} 540 6 ${value / 25} re`
+    }).join(' ')
+    const askingLabels = askingValues.map((value, categoryIndex) =>
+      `0.25 0.45 0.8 rg ${outlinedCurrencyLabel(92 + categoryIndex * 50, 655, Math.floor(value / 1000))} f`)
+      .join('\n')
+    const effectiveLabels = effectiveValues.map((value, categoryIndex) =>
+      `0.2 0.15 0.75 rg ${outlinedCurrencyLabel(102 + categoryIndex * 50, 655, Math.floor(value / 1000))} f`)
+      .join('\n')
+    const chartGraphics = [
+      `0.8 G 0.5 w ${gridLines} S`,
+      '0.25 0.45 0.8 rg 92 675 8 2 re f',
+      `0.25 0.45 0.8 rg ${askingBars} f`,
+      askingLabels,
+      '0.2 0.15 0.75 rg 192 675 8 2 re f',
+      `0.2 0.15 0.75 rg ${effectiveBars} f`,
+      effectiveLabels,
+    ].join('\n')
+    const { html } = await extractHTML(authorPdf(chartRuns, [], [chartGraphics]))
+    const rows = htmlRows(html[0]!).map(htmlCells)
+
+    expect(rows).toContainEqual([
+      'Category',
+      'Asking (estimated)',
+      'Effective (estimated)',
+    ])
+    expect(rows).toContainEqual(['North', '$1,500', '$1,400'])
+    expect(rows).toContainEqual(['East', '$2,100', '$2,050'])
+    expect(rows).toContainEqual(['West', '$2,250', '$2,200'])
   })
 
   it('reconstructs a filtered matrix with grouped metric bands', async () => {
