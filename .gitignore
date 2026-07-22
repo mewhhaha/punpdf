@@ -4,6 +4,7 @@ tmp
 .agents
 dist
 node_modules
+wasm/target
 examples/**/build
 test/artifacts/*
 !test/artifacts/.gitkeep

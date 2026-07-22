@@ -4,7 +4,9 @@
   "version": "0.1.22",
   "exports": {
     ".": "./dist/index.mjs",
-    "./pdfjs": "./dist/pdfjs.mjs"
+    "./pdfjs": "./dist/pdfjs.mjs",
+    "./wasm": "./dist/wasm.mjs",
+    "./wasm-module": "./dist/wasm-module.mjs"
   },
   "publish": {
     "include": [
@@ -19,6 +21,14 @@
       "dist/pdfjs.d.mts",
       "dist/pdfjs.d.ts",
       "dist/pdfjs.mjs",
+      "dist/wasm.d.mts",
+      "dist/wasm.d.ts",
+      "dist/wasm.mjs",
+      "dist/wasm-module.d.mts",
+      "dist/wasm-module.d.ts",
+      "dist/wasm-module.mjs",
+      "dist/punpdf_wasm.wasm",
+      "dist/shared/*",
       "dist/types/**/*.d.ts"
     ]
   }

@@ -88,6 +88,7 @@ export function textInVisualOrder(
 
 function attachInlineGlyphs(items: PositionedItem[]): PositionedItem[] {
   let attachedItems = [...items]
+  const attachedItemSet = new Set(items)
 
   for (const radical of items.filter(item => item.item.str === '√')) {
     const radicalRight = radical.x + radical.width
@@ -109,7 +110,9 @@ function attachInlineGlyphs(items: PositionedItem[]): PositionedItem[] {
     }
 
     attachedItems = attachedItems.filter(item => item !== radical && item !== radicand)
-    attachedItems.push({
+    attachedItemSet.delete(radical)
+    attachedItemSet.delete(radicand)
+    const attachedRadicand = {
       ...radicand,
       item: {
         ...radicand.item,
@@ -121,14 +124,19 @@ function attachInlineGlyphs(items: PositionedItem[]): PositionedItem[] {
         radical.x + radical.width,
         radicand.x + radicand.width,
       ) - radical.x,
-    })
+    }
+    attachedItems.push(attachedRadicand)
+    attachedItemSet.add(attachedRadicand)
   }
 
-  const candidates = [...attachedItems].sort(
-    (left, right) => left.fontSize - right.fontSize,
-  )
+  const maximumFontSize = Math.max(0, ...attachedItems.map(item => item.fontSize))
+  const candidates = attachedItems
+    .filter(item => item.fontSize < maximumFontSize * 0.85)
+    .sort(
+      (left, right) => left.fontSize - right.fontSize,
+    )
   for (const script of candidates) {
-    if (!attachedItems.includes(script) || script.item.str.trim().length === 0) {
+    if (!attachedItemSet.has(script) || script.item.str.trim().length === 0) {
       continue
     }
 
@@ -160,7 +168,9 @@ function attachInlineGlyphs(items: PositionedItem[]): PositionedItem[] {
     }
 
     attachedItems = attachedItems.filter(item => item !== base && item !== script)
-    attachedItems.push({
+    attachedItemSet.delete(base)
+    attachedItemSet.delete(script)
+    const attachedScript = {
       ...base,
       item: {
         ...base.item,
@@ -171,7 +181,9 @@ function attachInlineGlyphs(items: PositionedItem[]): PositionedItem[] {
         base.x + base.width,
         script.x + script.width,
       ) - base.x,
-    })
+    }
+    attachedItems.push(attachedScript)
+    attachedItemSet.add(attachedScript)
   }
 
   return attachedItems

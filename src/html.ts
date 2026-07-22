@@ -1,8 +1,10 @@
 import type { DocumentInitParameters, PDFDocumentProxy } from 'pdfjs-dist/types/src/display/api'
 import type { StructuredTextItem } from './text'
+import type { LocatedTableCell } from './wasm-bridge'
 import { createIsomorphicCanvasFactory, renderPageAsImage } from './image'
 import { extractText, extractTextItems } from './text'
 import { getDocumentProxy, getResolvedPDFJS, isPDFDocumentProxy } from './utils'
+import { getWasmTableLocator } from './wasm-bridge'
 
 export interface ExtractHTMLOptions {
   mergePages?: boolean
@@ -304,6 +306,7 @@ export async function extractHTML(
   const structuredPages = text.map((pageText, pageIndex) => {
     let lines = pageText.split('\n')
     const pageItems = extractedItems.items[pageIndex] ?? []
+    let pageItemsByValue: Map<string, StructuredTextItem[]> | undefined
     const navigationLineIndex = lines.findIndex((line, lineIndex) =>
       lineIndex < 3 && repeatedNavigationLines.has(line))
     if (navigationLineIndex >= 0) {
@@ -1011,10 +1014,19 @@ export async function extractHTML(
         }
         continue
       }
+      if (pageItemsByValue === undefined) {
+        pageItemsByValue = new Map<string, StructuredTextItem[]>()
+        for (const pageItem of pageItems) {
+          const matchingItems = pageItemsByValue.get(pageItem.str) ?? []
+          matchingItems.push(pageItem)
+          pageItemsByValue.set(pageItem.str, matchingItems)
+        }
+      }
+      const exactPageItemsByValue = pageItemsByValue
       const exactItemsForCell = (cell: string) => cell
         .split('<br>')
         .map(segment => segment.replace(/\\([\\|#])/g, '$1'))
-        .flatMap(segment => pageItems.filter(item => item.str === segment))
+        .flatMap(segment => exactPageItemsByValue.get(segment) ?? [])
       const rowAxisItems = rows
         .map(row => row.filter(Boolean).flatMap((cell) => {
           const matches = exactItemsForCell(cell)
@@ -1388,6 +1400,12 @@ export async function extractHTML(
           : pageItems.filter(item =>
               item.str.trim().length > 0
               && item.y < headerBaseline - item.fontSize * 0.2)
+        const bodyItemsByValue = new Map<string, StructuredTextItem[]>()
+        for (const bodyItem of bodyItems) {
+          const matchingItems = bodyItemsByValue.get(bodyItem.str) ?? []
+          matchingItems.push(bodyItem)
+          bodyItemsByValue.set(bodyItem.str, matchingItems)
+        }
         const sourceColumnTargets = Array.from(
           { length: sourceColumnCount },
           (_, columnIndex) => {
@@ -1395,7 +1413,7 @@ export async function extractHTML(
               .map(row => (row[columnIndex] ?? '').replace(/\\([\\|#])/g, '$1'))
               .filter(Boolean)
             const positions = values.flatMap((value) => {
-              const exactMatches = bodyItems.filter(item => item.str === value)
+              const exactMatches = bodyItemsByValue.get(value) ?? []
               const matchingItems = exactMatches.length > 0
                 ? exactMatches
                 : bodyItems.filter(item =>
@@ -3574,18 +3592,14 @@ interface OrderedListEntry {
   text: string
 }
 
-interface LocatedTableCell {
-  cellIndex: number
-  rowIndex: number
-  value: string
-  x: number
-  y: number
-}
-
 function locateTableCells(
   rows: string[][],
   positionedText: StructuredTextItem[],
 ): LocatedTableCell[] {
+  const wasmTableLocator = getWasmTableLocator()
+  if (wasmTableLocator) {
+    return wasmTableLocator(rows, positionedText)
+  }
   const visibleText = positionedText.filter(textRun => textRun.str.trim().length > 0)
   return rows.flatMap((row, rowIndex) => {
     const candidatesByCell = row.map((cell) => {
@@ -5215,17 +5229,18 @@ function repairJoinedTableCells(
         .flatMap(cell => cell.split('<br>'))
         .map(value => value.replaceAll('**', ''))
         .filter(Boolean)
-      const candidates = rowValues.flatMap(value => positionedTextByValue.get(value) ?? [])
+      const candidatesByValue = rowValues.map(value => positionedTextByValue.get(value) ?? [])
+      const candidates = candidatesByValue.flat()
       const followingCandidates = candidates.filter(item =>
         item.y < precedingBaseline - item.fontSize * 0.2)
       const candidatesInReadingOrder = followingCandidates.length > 0
         ? followingCandidates
         : candidates
-      const baseline = candidatesInReadingOrder
-        .map(candidate => ({
-          y: candidate.y,
-          matches: rowValues.filter(value => (positionedTextByValue.get(value) ?? []).some(item =>
-            Math.abs(item.y - candidate.y) <= item.fontSize * 0.3)).length,
+      const baseline = [...new Set(candidatesInReadingOrder.map(candidate => candidate.y))]
+        .map(candidateBaseline => ({
+          y: candidateBaseline,
+          matches: candidatesByValue.filter(items => items.some(item =>
+            Math.abs(item.y - candidateBaseline) <= item.fontSize * 0.3)).length,
         }))
         .sort((left, right) => right.matches - left.matches || right.y - left.y)[0]
         ?.y

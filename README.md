@@ -269,6 +269,33 @@ const { html } = await extractHTML(buffer, { mergePages: true })
 console.log(html)
 ```
 
+#### Rust/WebAssembly accelerator
+
+For table-heavy financial reports, the optional WebAssembly entry keeps the same `extractHTML` API and output while running positional table-cell matching in compiled Rust. PDF.js parsing and semantic HTML reconstruction remain in JavaScript.
+
+```ts
+import { extractHTML } from '@mewhhaha/punpdf/wasm'
+
+const { html } = await extractHTML(buffer, { mergePages: true })
+```
+
+The default entry embeds and lazily instantiates the Wasm binary. Cloudflare Workers prohibits instantiating Wasm from a byte buffer, so pass the separately published, precompiled module during module initialization instead:
+
+```ts
+import { extractHTML, initializeWasm } from '@mewhhaha/punpdf/wasm'
+import wasmModule from '@mewhhaha/punpdf/wasm-module'
+
+await initializeWasm(wasmModule)
+
+export default {
+  async fetch(request: Request) {
+    const pdf = new Uint8Array(await request.arrayBuffer())
+    const { html } = await extractHTML(pdf, { mergePages: true })
+    return new Response(html, { headers: { 'content-type': 'text/html' } })
+  },
+}
+```
+
 Set `preserveLayout` to include a rendered image of every source page before its semantic content. This retains charts, logos, signatures, and other non-text visuals at the cost of larger HTML. Node.js callers must provide the optional `@napi-rs/canvas` import.
 
 ```ts
@@ -506,6 +533,15 @@ const html = `<!DOCTYPE html>
 </html>`
 
 await writeFile('dummy-page-1.html', html)
+```
+
+## Building from source
+
+The standard build also compiles the Rust crate, so the `wasm32-unknown-unknown` target must be installed:
+
+```bash
+rustup target add wasm32-unknown-unknown
+pnpm build
 ```
 
 ## License

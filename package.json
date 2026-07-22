@@ -43,6 +43,22 @@
     "./pdfjs": {
       "types": "./dist/pdfjs.d.mts",
       "import": "./dist/pdfjs.mjs"
+    },
+    "./wasm": {
+      "import": {
+        "types": "./dist/wasm.d.mts",
+        "default": "./dist/wasm.mjs"
+      },
+      "require": {
+        "types": "./dist/wasm.d.cts",
+        "default": "./dist/wasm.cjs"
+      }
+    },
+    "./wasm-module": {
+      "import": {
+        "types": "./dist/wasm-module.d.mts",
+        "default": "./dist/wasm-module.mjs"
+      }
     }
   },
   "main": "./dist/index.cjs",
@@ -60,7 +76,8 @@
     "dist"
   ],
   "scripts": {
-    "build": "unbuild && node scripts/post-build.mjs",
+    "build": "pnpm run build:wasm && node scripts/prepare-build.mjs && unbuild && node scripts/post-build.mjs",
+    "build:wasm": "cargo build --manifest-path wasm/Cargo.toml --target wasm32-unknown-unknown --release",
     "build:pdfjs": "rollup --config pdfjs.rollup.config.ts --configPlugin typescript && cp -R node_modules/pdfjs-dist/types dist",
     "dev": "unbuild --stub",
     "lint": "eslint .",
@@ -70,7 +87,9 @@
     "release": "bumpp",
     "test": "vitest",
     "test:fixtures": "node scripts/check-text-fixtures.mjs",
-    "test:types": "tsc --noEmit"
+    "test:rust": "cargo test --manifest-path wasm/Cargo.toml",
+    "test:types": "tsc --noEmit",
+    "test:wasm": "node scripts/check-wasm.mjs"
   },
   "peerDependencies": {
     "@napi-rs/canvas": "^0.1.69"
