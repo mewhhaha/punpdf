@@ -40,6 +40,47 @@ export interface ExtractedTextPage {
   text: string
 }
 
+export async function extractVisualTextAndItems(
+  document: PDFDocumentProxy,
+): Promise<{ totalPages: number, text: string[], items: StructuredTextItem[][] }> {
+  const text: string[] = []
+  const items: StructuredTextItem[][] = []
+
+  for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber++) {
+    const page = await document.getPage(pageNumber)
+    try {
+      const content = await page.getTextContent()
+      const textItems = (content.items as TextItem[]).filter(item => item.str != null)
+      const styles = content.styles as Record<string, TextStyle>
+      const fontKeys = new Map<string, string>()
+      text.push(textInVisualOrder(textItems, page.getViewport({ scale: 1 }).transform))
+      items.push(textItems.map((item) => {
+        const [_a, _b, c, d, e, f] = item.transform
+        if (!fontKeys.has(item.fontName)) {
+          fontKeys.set(item.fontName, `font-${fontKeys.size + 1}`)
+        }
+        return {
+          str: item.str,
+          x: e,
+          y: f,
+          width: item.width,
+          height: item.height,
+          fontSize: Math.hypot(c, d),
+          fontFamily: styles[item.fontName]?.fontFamily ?? '',
+          fontKey: fontKeys.get(item.fontName),
+          dir: item.dir,
+          hasEOL: item.hasEOL,
+        }
+      }))
+    }
+    finally {
+      page.cleanup()
+    }
+  }
+
+  return { totalPages: document.numPages, text, items }
+}
+
 export async function extractTextItems(
   data: DocumentInitParameters['data'] | PDFDocumentProxy,
 ): Promise<{ totalPages: number, items: StructuredTextItem[][] }> {

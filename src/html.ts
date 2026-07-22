@@ -2,7 +2,7 @@ import type { DocumentInitParameters, PDFDocumentProxy } from 'pdfjs-dist/types/
 import type { StructuredTextItem } from './text'
 import type { LocatedTableCell } from './wasm-bridge'
 import { createIsomorphicCanvasFactory, renderPageAsImage } from './image'
-import { extractText, extractTextItems } from './text'
+import { extractVisualTextAndItems } from './text'
 import { getDocumentProxy, getResolvedPDFJS, isPDFDocumentProxy } from './utils'
 import { getWasmTableLocator } from './wasm-bridge'
 
@@ -43,15 +43,13 @@ export async function extractHTML(
   const layoutDocument = preserveLayout && !ownsDocument
     ? await getDocumentProxy(await document.getData(), { CanvasFactory })
     : document
-  let extractedText: { totalPages: number, text: string[] }
-  let extractedItems: Awaited<ReturnType<typeof extractTextItems>>
+  let extractedText: Awaited<ReturnType<typeof extractVisualTextAndItems>>
   let pageGraphics: PositionedGraphic[][] = []
   let pageImages: string[] | undefined
 
   try {
-    extractedText = await extractText(document, { readingOrder: 'visual' })
-    extractedItems = await extractTextItems(document)
-    const pagesNeedingChartGraphics = extractedItems.items.flatMap((pageItems, pageIndex) => {
+    extractedText = await extractVisualTextAndItems(document)
+    const pagesNeedingChartGraphics = extractedText.items.flatMap((pageItems, pageIndex) => {
       const chartTables = renderChartTables(pageItems)
       return chartTables?.some(line => /\|\s*\|/.test(line)) ? [pageIndex] : []
     })
@@ -276,7 +274,7 @@ export async function extractHTML(
       await document.cleanup()
     }
   }
-  const { text, totalPages } = extractedText
+  const { items: extractedItems, text, totalPages } = extractedText
   const repeatedNavigationCounts = new Map<string, number>()
   for (const pageText of text) {
     const leadingLines = pageText.split('\n').slice(0, 4)
@@ -305,7 +303,7 @@ export async function extractHTML(
   )
   const structuredPages = text.map((pageText, pageIndex) => {
     let lines = pageText.split('\n')
-    const pageItems = extractedItems.items[pageIndex] ?? []
+    const pageItems = extractedItems[pageIndex] ?? []
     let pageItemsByValue: Map<string, StructuredTextItem[]> | undefined
     const navigationLineIndex = lines.findIndex((line, lineIndex) =>
       lineIndex < 3 && repeatedNavigationLines.has(line))
@@ -2099,7 +2097,7 @@ export async function extractHTML(
     renderPageArticle(
       page,
       pageIndex + 1,
-      extractedItems.items[pageIndex] ?? [],
+      extractedItems[pageIndex] ?? [],
       pageImages?.[pageIndex],
     ))
 
