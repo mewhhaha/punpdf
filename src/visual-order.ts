@@ -130,6 +130,14 @@ function attachInlineGlyphs(items: PositionedItem[]): PositionedItem[] {
   }
 
   const maximumFontSize = Math.max(0, ...attachedItems.map(item => item.fontSize))
+  let nextAttachmentOrder = 0
+  const baseCandidates = attachedItems
+    .map(item => ({
+      item,
+      order: nextAttachmentOrder++,
+      right: item.x + item.width,
+    }))
+    .sort((left, right) => left.right - right.right || left.order - right.order)
   const candidates = attachedItems
     .filter(item => item.fontSize < maximumFontSize * 0.85)
     .sort(
@@ -140,29 +148,56 @@ function attachInlineGlyphs(items: PositionedItem[]): PositionedItem[] {
       continue
     }
 
-    const base = attachedItems
-      .filter((candidate) => {
-        if (
-          candidate === script
-          || candidate.item.str.trim().length === 0
-          || script.fontSize >= candidate.fontSize * 0.85
-        ) {
-          return false
-        }
+    const minimumRight = script.x - Math.max(0.75, maximumFontSize * 0.1)
+    const maximumRight = script.x + 0.5
+    let firstCandidate = 0
+    let pastLastCandidate = baseCandidates.length
+    while (firstCandidate < pastLastCandidate) {
+      const middle = Math.floor((firstCandidate + pastLastCandidate) / 2)
+      if (baseCandidates[middle]!.right < minimumRight) {
+        firstCandidate = middle + 1
+      }
+      else {
+        pastLastCandidate = middle
+      }
+    }
+    let base: PositionedItem | undefined
+    let baseDistance = Infinity
+    let baseOrder = Infinity
+    for (let candidateIndex = firstCandidate; candidateIndex < baseCandidates.length; candidateIndex++) {
+      const candidateEntry = baseCandidates[candidateIndex]!
+      if (candidateEntry.right > maximumRight) {
+        break
+      }
+      const candidate = candidateEntry.item
+      if (
+        !attachedItemSet.has(candidate)
+        || candidate === script
+        || candidate.item.str.trim().length === 0
+        || script.fontSize >= candidate.fontSize * 0.85
+      ) {
+        continue
+      }
 
-        const gap = script.x - (candidate.x + candidate.width)
-        const overlap = Math.min(candidate.y, script.y)
-          - Math.max(candidate.y - candidate.fontSize, script.y - script.fontSize)
-        return gap >= -0.5
-          && gap <= Math.max(0.75, candidate.fontSize * 0.1)
-          && Math.abs(candidate.y - script.y) >= script.fontSize * 0.15
-          && overlap >= script.fontSize * 0.5
-      })
-      .sort((left, right) =>
-        Math.abs(script.x - left.x - left.width)
-        - Math.abs(script.x - right.x - right.width),
-      )
-      .at(0)
+      const gap = script.x - candidateEntry.right
+      const overlap = Math.min(candidate.y, script.y)
+        - Math.max(candidate.y - candidate.fontSize, script.y - script.fontSize)
+      if (
+        gap < -0.5
+        || gap > Math.max(0.75, candidate.fontSize * 0.1)
+        || Math.abs(candidate.y - script.y) < script.fontSize * 0.15
+        || overlap < script.fontSize * 0.5
+      ) {
+        continue
+      }
+
+      const distance = Math.abs(gap)
+      if (distance < baseDistance || (distance === baseDistance && candidateEntry.order < baseOrder)) {
+        base = candidate
+        baseDistance = distance
+        baseOrder = candidateEntry.order
+      }
+    }
     if (!base) {
       continue
     }
@@ -184,6 +219,30 @@ function attachInlineGlyphs(items: PositionedItem[]): PositionedItem[] {
     }
     attachedItems.push(attachedScript)
     attachedItemSet.add(attachedScript)
+    const attachedScriptEntry = {
+      item: attachedScript,
+      order: nextAttachmentOrder++,
+      right: attachedScript.x + attachedScript.width,
+    }
+    let insertionIndex = 0
+    let insertionLimit = baseCandidates.length
+    while (insertionIndex < insertionLimit) {
+      const middle = Math.floor((insertionIndex + insertionLimit) / 2)
+      const candidateEntry = baseCandidates[middle]!
+      if (
+        candidateEntry.right < attachedScriptEntry.right
+        || (
+          candidateEntry.right === attachedScriptEntry.right
+          && candidateEntry.order < attachedScriptEntry.order
+        )
+      ) {
+        insertionIndex = middle + 1
+      }
+      else {
+        insertionLimit = middle
+      }
+    }
+    baseCandidates.splice(insertionIndex, 0, attachedScriptEntry)
   }
 
   return attachedItems
