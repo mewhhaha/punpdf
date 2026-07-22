@@ -17,6 +17,8 @@ export interface StructuredTextItem {
   fontSize: number
   /** Font family name. */
   fontFamily: string
+  /** Page-local key that distinguishes source font faces. */
+  fontKey?: string
   /** Text direction: `"ltr"`, `"rtl"`, or `"ttb"`. */
   dir: string
   /** Whether the text item is followed by a line break. */
@@ -66,11 +68,15 @@ async function getPageTextItems(
   try {
     const content = await page.getTextContent()
     const styles = content.styles as Record<string, TextStyle>
+    const fontKeys = new Map<string, string>()
 
     return (content.items as TextItem[])
       .filter(item => item.str != null)
       .map((item) => {
         const [_a, _b, c, d, e, f] = item.transform
+        if (!fontKeys.has(item.fontName)) {
+          fontKeys.set(item.fontName, `font-${fontKeys.size + 1}`)
+        }
         return {
           str: item.str,
           x: e,
@@ -79,6 +85,7 @@ async function getPageTextItems(
           height: item.height,
           fontSize: Math.hypot(c, d),
           fontFamily: styles[item.fontName]?.fontFamily ?? '',
+          fontKey: fontKeys.get(item.fontName),
           dir: item.dir,
           hasEOL: item.hasEOL,
         }

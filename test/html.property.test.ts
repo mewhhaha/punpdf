@@ -12,6 +12,7 @@ interface AuthoredRun {
   x: number
   y: number
   size: number
+  font?: 'regular' | 'bold'
   matrix?: [number, number, number, number, number, number]
 }
 
@@ -26,6 +27,7 @@ function authorPdf(
 ): Uint8Array {
   const pages = [runs, ...additionalPages]
   const fontReference = 3 + pages.length * 2
+  const boldFontReference = fontReference + 1
   const pageReferences = pages.map((_, index) => 3 + index * 2)
   const objects = [
     '<< /Type /Catalog /Pages 2 0 R >>',
@@ -33,17 +35,20 @@ function authorPdf(
   ]
   for (const [pageIndex, pageRuns] of pages.entries()) {
     const content = pageRuns
-      .map(({ text, x, y, size, matrix }) =>
-        `BT /F1 ${size} Tf ${(matrix ?? [1, 0, 0, 1, x, y]).join(' ')} Tm (${escapePdfString(text)}) Tj ET`)
+      .map(({ text, x, y, size, font, matrix }) =>
+        `BT /${font === 'bold' ? 'F2' : 'F1'} ${size} Tf ${(matrix ?? [1, 0, 0, 1, x, y]).join(' ')} Tm (${escapePdfString(text)}) Tj ET`)
       .concat(pageCommands[pageIndex] ?? '')
       .join('\n')
     const contentReference = pageReferences[pageIndex]! + 1
     objects.push(
-      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 ${fontReference} 0 R >> >> /Contents ${contentReference} 0 R >>`,
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 ${fontReference} 0 R /F2 ${boldFontReference} 0 R >> >> /Contents ${contentReference} 0 R >>`,
       `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
     )
   }
-  objects.push('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>')
+  objects.push(
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>',
+  )
 
   let pdf = '%PDF-1.4\n'
   const offsets: number[] = []
@@ -216,6 +221,245 @@ describe('html extraction properties', () => {
       + '<td>RENT</td><td>$100</td><td>$80</td><td>$20</td><td>Open</td>',
     )
     expect(htmlRows(html[0]!).map(htmlCells)).toContainEqual(['UTILITY', '$20', '$15', '$5', 'Open'])
+  })
+
+  it('uses the first populated label column as the row header', async () => {
+    const { html } = await extractHTML(authorPdf(tableRuns([
+      ['Group', 'Plan', 'Amount'],
+      ['', 'A1', '$1,500'],
+      ['', 'A2', '$1,600'],
+    ], {
+      starts: [40, 180, 360],
+      top: 790,
+      size: 6,
+    })))
+
+    expect(html[0]).toContain('<tr><th scope="row">A1</th><td>$1,500</td>')
+    expect(html[0]).toContain('<tr><th scope="row">A2</th><td>$1,600</td>')
+    expect(html[0]).not.toContain('<td>A1</td>')
+  })
+
+  it('renders compact report furniture as metadata instead of a table', async () => {
+    const runs: AuthoredRun[] = [
+      { text: 'Advertising Source Evaluation', x: 180, y: 820, size: 10 },
+      { text: 'OneSite Rents v3.0', x: 30, y: 805, size: 5 },
+      { text: 'Page 1 of 2', x: 500, y: 805, size: 5 },
+      { text: '06/14/2026', x: 30, y: 795, size: 5 },
+      { text: '2:16:33PM', x: 130, y: 795, size: 5 },
+      { text: 'PRIMARY ADVERTISING SOURCE EVALUATION', x: 230, y: 795, size: 5 },
+      { text: 'lea-231-001', x: 500, y: 795, size: 5 },
+    ]
+    const { html } = await extractHTML(authorPdf(runs))
+
+    expect(html[0]).toContain('<header class="report-metadata">')
+    expect(html[0]).toContain('OneSite Rents v3.0')
+    expect(html[0]).not.toContain('<table>')
+  })
+
+  it('renders a standalone label strip as prose instead of a table', async () => {
+    const { html } = await extractHTML(authorPdf(tableRuns([
+      ['North Property', 'South Property', 'East Property', 'West Property'],
+    ], {
+      starts: [40, 170, 300, 430],
+      top: 790,
+      size: 6,
+    })))
+
+    expect(html[0]).toContain('North Property')
+    expect(html[0]).not.toContain('<table>')
+  })
+
+  it('keeps a marker-heavy first record and generates semantic headers', async () => {
+    const rows = Array.from({ length: 8 }, (_, rowIndex) => [
+      `Amenity ${rowIndex + 1}`,
+      ...Array.from<string>({ length: 9 }).fill('X'),
+    ])
+    const { html } = await extractHTML(authorPdf(tableRuns(rows, {
+      starts: [20, 135, 180, 225, 270, 315, 360, 405, 450, 495],
+      top: 790,
+      size: 5,
+    })))
+
+    expect(html[0]).toContain('<th scope="col">Row label</th>')
+    expect(html[0]).toContain('<th scope="row">Amenity 1</th>')
+    expect(html[0]).toContain('<th scope="row">Amenity 8</th>')
+    expect(html[0]).not.toContain('<figure class="spatial-content">')
+  })
+
+  it('names blank columns in an otherwise usable data header', async () => {
+    const rows = [
+      ['', '', 'PTD Actual', 'PTD Budget'],
+      ['40000-000', 'Income', '$12,000', '$11,000'],
+      ['41000-000', 'Market Rent', '$8,000', '$7,500'],
+      ['41999-099', 'Total Income', '$20,000', '$18,500'],
+    ]
+    const { html } = await extractHTML(authorPdf(tableRuns(rows, {
+      starts: [30, 150, 320, 430],
+      top: 790,
+      size: 6,
+    })))
+
+    expect(html[0]).toContain('<th scope="col">Row label</th>')
+    expect(html[0]).toContain('<th scope="col">Column 2</th>')
+    expect(html[0]).toContain('<th scope="col">PTD Actual</th>')
+    expect(html[0]).not.toContain('<th scope="col"></th>')
+  })
+
+  it('aligns repeated marker values beneath source columns', async () => {
+    const matrixHeader = [
+      'Row label',
+      ...Array.from({ length: 9 }, (_, propertyIndex) => `Property ${propertyIndex + 1}`),
+    ]
+    const matrixRows = Array.from({ length: 8 }, (_, rowIndex) => [
+      `Amenity ${rowIndex + 1}`,
+      ...Array.from({ length: 9 }, (_, propertyIndex) =>
+        rowIndex > 0 && (rowIndex + propertyIndex) % 3 === 0 ? '' : 'X'),
+    ])
+    const { html } = await extractHTML(authorPdf(tableRuns([matrixHeader, ...matrixRows], {
+      starts: [20, 130, 175, 220, 265, 310, 355, 400, 445, 490],
+      top: 790,
+      size: 5,
+    })))
+
+    expect(html[0]).toContain('<th scope="col">Property 1</th>')
+    expect(html[0]).toContain('<th scope="col">Property 9</th>')
+    expect(html[0]).toContain(
+      '<tr><th scope="row">Amenity 2</th><td>X</td><td>X</td><td></td><td>X</td>',
+    )
+    expect(html[0]).not.toContain('<figure class="spatial-content">')
+  })
+
+  it('keeps blank-valued marker records as rows while preserving group headings', async () => {
+    const propertyHeaders = Array.from({ length: 9 }, (_, index) => `Property ${index + 1}`)
+    const markerValues = propertyHeaders.map(() => 'X')
+    const rows = [
+      ['Row label', ...propertyHeaders],
+      ['Barbecue Area', ...markerValues],
+      ['Firepit', ...propertyHeaders.map(() => '')],
+      ['Fitness Center', ...markerValues],
+      ['Property Management Policies', ...propertyHeaders.map(() => '')],
+      ['Pets Allowed', ...markerValues],
+      ['Short Term Lease Options', '', 'X', ...propertyHeaders.slice(2).map(() => '')],
+    ]
+    const runs = tableRuns(rows, {
+      starts: [20, 160, 205, 250, 295, 340, 385, 430, 475, 520],
+      top: 790,
+      size: 6,
+    }).map((run) => {
+      if (run.text === 'Property Management Policies') {
+        return { ...run, font: 'bold' as const, size: 10 }
+      }
+      if (rows.slice(1).some(row => row[0] === run.text)) {
+        return { ...run, size: 10 }
+      }
+      return run
+    })
+    const { html } = await extractHTML(authorPdf([
+      { text: 'Amenities Matrix', x: 220, y: 820, size: 14, font: 'bold' },
+      ...runs,
+    ]))
+
+    expect(html[0]).toContain(
+      `<tr><th scope="row">Firepit</th>${'<td></td>'.repeat(9)}</tr>`,
+    )
+    expect(html[0]).toMatch(/(?:scope="rowgroup">Property Management Policies<\/th>|>Property Management Policies<\/h\d>)/)
+    expect(html[0]).toContain('Property Management Policies')
+    expect(html[0]).not.toContain('<th scope="row">Property Management Policies</th>')
+  })
+
+  it('keeps dense wide records tabular when their final columns contain prose', async () => {
+    const header = ['Property', 'Unit', 'Beds', 'Baths', 'Sqft', 'Rent', 'Status', 'Features']
+    const rows = Array.from({ length: 24 }, (_, rowIndex) => [
+      `Property ${rowIndex % 3 + 1}`,
+      String(1000 + rowIndex),
+      String(rowIndex % 3 + 1),
+      String(rowIndex % 2 + 1),
+      String(700 + rowIndex * 10),
+      `$${1_500 + rowIndex * 10}`,
+      rowIndex % 2 === 0 ? 'Occupied' : 'Vacant',
+      `Full-size washer and dryer package ${rowIndex + 1}`,
+    ])
+    const { html } = await extractHTML(authorPdf(tableRuns([header, ...rows], {
+      starts: [20, 90, 145, 190, 235, 285, 350, 440],
+      top: 810,
+      size: 3,
+    })))
+
+    expect(html[0]).toContain('<table>')
+    expect(html[0]).not.toContain('<figure class="spatial-content">')
+    expect(htmlRows(html[0]!).map(htmlCells)).toContainEqual(header)
+    expect(html[0]).toContain('<th scope="row">Property 1</th>')
+  })
+
+  it('structures repeated account records stored as complete text lines', async () => {
+    const lines = [
+      '41000-000 Market Rent 315000.00 320000.00 -5000.00 -1.56 3698000.00 3840000.00 -142000.00 -3.70 3840000.00',
+      '43000-000 Other Income 14500.00 17000.00 -2500.00 -14.71 169200.00 204000.00 -34800.00 -17.06 204000.00',
+      '49999-999 Total Income 329500.00 337000.00 -7500.00 -2.23 3867200.00 4044000.00 -176800.00 -4.37 4044000.00',
+      '71510-000 Roof Replacement 18000.00 10000.00 -8000.00 -80.00 30000.00 30000.00 0.00 0.00 120000.00 procurement deposit',
+    ]
+    const { html } = await extractHTML(authorPdf([
+      { text: 'Budget Comparison', x: 40, y: 810, size: 10 },
+      ...lines.map((text, lineIndex) => ({
+        text,
+        x: 40,
+        y: 780 - lineIndex * 18,
+        size: 5,
+      })),
+    ]))
+    const renderedRows = htmlRows(html[0]!).map(htmlCells)
+
+    expect(renderedRows).toContainEqual([
+      'Account',
+      'Description',
+      'Current Actual',
+      'Current Budget',
+      'Current Variance',
+      'Current Variance %',
+      'YTD Actual',
+      'YTD Budget',
+      'YTD Variance',
+      'YTD Variance %',
+      'Annual Budget',
+      'Notes',
+    ])
+    expect(renderedRows).toContainEqual([
+      '71510-000',
+      'Roof Replacement',
+      '18000.00',
+      '10000.00',
+      '-8000.00',
+      '-80.00',
+      '30000.00',
+      '30000.00',
+      '0.00',
+      '0.00',
+      '120000.00',
+      'procurement deposit',
+    ])
+    expect(html[0]).toContain('<th scope="row">41000-000</th>')
+  })
+
+  it('promotes a transaction header above currency-code values', async () => {
+    const { html } = await extractHTML(authorPdf(tableRuns([
+      ['Date', 'Description', 'Money out', 'Money in', 'Balance'],
+      ['May 13, 2026', 'lg.com', '2,449.00 PLN', '', '1,586.75 PLN'],
+      ['May 14, 2026', 'Deposit', '', '500.00 PLN', '2,086.75 PLN'],
+    ], {
+      starts: [30, 150, 300, 400, 500],
+      top: 790,
+      size: 6,
+    })))
+
+    expect(html[0]).toContain('<thead>')
+    expect(htmlRows(html[0]!).map(htmlCells)).toContainEqual([
+      'Date',
+      'Description',
+      'Money out',
+      'Money in',
+      'Balance',
+    ])
+    expect(html[0]).toContain('<th scope="row">May 13, 2026</th>')
   })
 
   it('uses a wide record as the schema when detail rows are sparse', async () => {
@@ -1781,7 +2025,13 @@ describe('html extraction properties', () => {
     })))
     const renderedRows = htmlRows(html[0]!).map(htmlCells)
 
-    expect(renderedRows[0]).toEqual(['', '', 'Actual\nMay 2026', 'Budget\nJune 2026', 'Variance\n%'])
+    expect(renderedRows[0]).toEqual([
+      'Row label',
+      'Column 2',
+      'Actual\nMay 2026',
+      'Budget\nJune 2026',
+      'Variance\n%',
+    ])
     expect(renderedRows).toContainEqual(['40000-000', 'Income', '', '', ''])
     expect(renderedRows).toContainEqual([
       '40001-000',
@@ -2692,7 +2942,10 @@ describe('html extraction properties', () => {
 
     expect(html[0]).toContain('<div class="matrix-with-filters">')
     expect(html[0]).toContain('<aside class="matrix-filters">')
-    expect(html[0]!.match(/<table>/g)).toHaveLength(4)
+    expect(html[0]!.match(/<table>/g)).toHaveLength(1)
+    expect(html[0]).toContain('<section class="matrix-filter">')
+    expect(html[0]).toContain('<h2>Property Name</h2>')
+    expect(html[0]).toContain('<li>Subject Property</li>')
     expect(matrixHeader).toContain('<th colspan="4" scope="colgroup">90-Day Trailing Rents</th>')
     expect(matrixHeader).toContain('<th colspan="4" scope="colgroup">30-Day Trailing Rents</th>')
     expect(matrixHeader).toContain('<th colspan="4" scope="colgroup">Active Asking Rents</th>')
@@ -2738,7 +2991,7 @@ describe('html extraction properties', () => {
     expect(html[0]).not.toContain('scope="row">Total</th>')
   })
 
-  it('restores detached headers and wrapped group labels without inventing text', async () => {
+  it('restores detached headers and names unlabeled columns', async () => {
     const starts = [80, 230, 350, 420, 490]
     const { html } = await extractHTML(authorPdf([
       { text: 'Summary by General Ledger Account', x: 160, y: 810, size: 8 },
@@ -2757,11 +3010,11 @@ describe('html extraction properties', () => {
     const renderedRows = htmlRows(document)
 
     expect(renderedRows.map(htmlCells)).toContainEqual([
-      '',
-      '',
+      'Column 1',
+      'Row label',
       'Beginning',
       'Ending',
-      '',
+      'Column 5',
     ])
     expect(document).not.toContain('Transaction Code')
     expect(document).not.toContain('>Change</th>')
@@ -2870,6 +3123,7 @@ describe('html extraction properties', () => {
     const document = html[0]!
     const renderedRows = htmlRows(document).map(htmlCells)
 
+    expect(renderedRows).toContainEqual(['Category', 'Value'])
     expect(renderedRows).toContainEqual(['Beginning balance', '$100.00'])
     expect(renderedRows).toContainEqual(['Ending balance', '$115.00'])
     expect(document).toContain('<aside>')

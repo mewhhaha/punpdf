@@ -518,6 +518,7 @@ export async function extractHTML(
       (cell.match(/[a-z][a-z'-]*/gi) ?? []).length >= 2).length
     const numericTableCellCount = rawTabularCells.filter(cell =>
       /^(?:[$–—-]|\(?\d[\d,.]*%?\)?)$/.test(cell)).length
+    const structuredTableCellCount = rawTabularCells.filter(isStructuredTableValue).length
     let placeholderFinancialRowRunLength = 0
     let maximumPlaceholderFinancialRowRunLength = 0
     for (const row of rawTabularRows) {
@@ -598,16 +599,20 @@ export async function extractHTML(
       && rightTableCells.length >= 3
       && rightTableCells.length <= leftTableCells.length * 0.5
       && rightNarrativeCellCount >= Math.ceil(rightTableCells.length * 0.8)
-    const needsPositionedText = hasFragmentedFinancialTable
+    const hasDenseTabularShape = stableColumnAnchors.length >= 5
+      || (maximumRawColumnCount >= 8 && rawTabularRows.length >= 8)
+    const hasDenseTabularRecords = hasDenseTabularShape
+      && structuredTableCellCount >= Math.max(30, Math.ceil(rawTabularRows.length * 1.5))
+    const needsPositionedText = (hasFragmentedFinancialTable && !hasDenseTabularRecords)
       || hasFragmentedSchedule
-      || hasDetachedTableLabels
+      || (hasDetachedTableLabels && !hasDenseTabularRecords)
       || hasDetachedExhibitIdentifiers
       || hasFragmentedSignatures
-      || hasDetachedNarrativeSidebar
-      || hasDenseParallelFinancialTable
-      || hasPlaceholderFinancialRecordRun
-      || hasFragmentedParallelNarrative
-      || hasSparseCompoundGrid
+      || (hasDetachedNarrativeSidebar && !hasDenseTabularRecords)
+      || (hasDenseParallelFinancialTable && !hasDenseTabularRecords)
+      || (hasPlaceholderFinancialRecordRun && !hasDenseTabularRecords)
+      || (hasFragmentedParallelNarrative && !hasDenseTabularRecords)
+      || (hasSparseCompoundGrid && !hasDenseTabularRecords)
       || hasFragmentedDirectory
     const chartTables = renderChartTables(pageItems, pageGraphics[pageIndex] ?? [])
     if (chartTables) {
@@ -1109,6 +1114,8 @@ export async function extractHTML(
       tableRunCount++
       const isNumericCell = (cell: string) =>
         /^(?:-|[+\-]?\$?\(?\d[\d,]*(?:\.\d+)?%?\)?|\d+\/\d+|\d{1,4}[-/]\d{1,2}[-/]\d{1,4})\s*\*?$/.test(cell)
+      const isTableValueCell = (cell: string) =>
+        isNumericCell(cell) || /^(?:[X–—]|N\/?A)$/i.test(cell)
       const precedingStandaloneLabel = [...structuredLines]
         .reverse()
         .find(structuredLine => structuredLine.length > 0)
@@ -1744,7 +1751,7 @@ export async function extractHTML(
 
       const firstRecordRowIndex = rows.findIndex((row) => {
         const populatedCells = row.filter(cell => cell.length > 0)
-        const numericCells = populatedCells.filter(isNumericCell)
+        const numericCells = populatedCells.filter(isTableValueCell)
         return populatedCells.length >= 2
           && numericCells.length >= Math.max(3, Math.ceil(populatedCells.length / 3))
       })
@@ -1753,7 +1760,7 @@ export async function extractHTML(
         while (stackedHeaderStart > 0) {
           const candidate = rows[stackedHeaderStart - 1]!
           const populatedCells = candidate.filter(cell => cell.length > 0)
-          if (populatedCells.length === 0 || populatedCells.some(isNumericCell)) {
+          if (populatedCells.length === 0 || populatedCells.some(isTableValueCell)) {
             break
           }
           stackedHeaderStart--
@@ -1868,7 +1875,7 @@ export async function extractHTML(
       }
 
       const columnCount = Math.max(...rows.map(row => row.length))
-      const headerRowCount = inferHeaderRowCount(rows, isNumericCell)
+      const headerRowCount = inferHeaderRowCount(rows, isTableValueCell)
       const hasHeader = headerRowCount > 0
       const widestRow = rows.find(row => row.length === columnCount)!
       const emptyHeader = [...widestRow]
@@ -3710,11 +3717,41 @@ function renderPageArticle(
     return `<article class="pdf-page" data-page-number="${pageNumber}">\n${preservedLayout}${positionedMatrix}\n</article>`
   }
   const mergedBlocks = mergeTableSections(enrichTableHeaders(
-    splitParallelTables(attachTrailingCellContinuations(parsePageBlocks(page))),
+    splitParallelTables(attachTrailingCellContinuations(
+      promoteFinancialParagraphTables(parsePageBlocks(page)),
+    )),
   ), positionedText)
+  const precedingTableRecords: string[][] = []
+  const distinctBlocks = mergedBlocks.map((block) => {
+    if (block.kind !== 'table') {
+      return block
+    }
+    const leadingRecord = block.body[0]?.kind === 'row' ? block.body[0] : undefined
+    const bodyStartsWithDuplicateRecord = leadingRecord !== undefined
+      && block.body.length >= 2
+      && precedingTableRecords.some(record => tableRecordsAreEqual(leadingRecord.cells, record))
+    const tableWithoutDuplicateRecord = bodyStartsWithDuplicateRecord
+      ? { ...block, body: block.body.slice(1) }
+      : block
+    const populatedHeaders = tableWithoutDuplicateRecord.header.filter(Boolean)
+    const headerLooksLikeRecord = populatedHeaders.filter(isStructuredTableValue).length >= 2
+      && populatedHeaders.some(header => !isStructuredTableValue(header))
+    const headerDuplicatesPrecedingRecord = headerLooksLikeRecord
+      && precedingTableRecords.some(record =>
+        tableRecordsAreEqual(tableWithoutDuplicateRecord.header, record))
+    const distinctTable = headerDuplicatesPrecedingRecord
+      ? {
+          ...tableWithoutDuplicateRecord,
+          header: tableWithoutDuplicateRecord.header.map(() => ''),
+        }
+      : tableWithoutDuplicateRecord
+    precedingTableRecords.push(...distinctTable.body.flatMap(row =>
+      row.kind === 'row' ? [row.cells] : []))
+    return distinctTable
+  })
   const repairedBlocks = repairJoinedTableCells(
     enrichTypedCategoryTables(
-      enrichAdvertisingSourceTable(mergedBlocks, positionedText),
+      enrichAdvertisingSourceTable(distinctBlocks, positionedText),
     ),
     positionedText,
   )
@@ -4001,8 +4038,8 @@ function reconstructPositionedMatrixWithFilters(
       return `<p>${renderInline(`${label}: ${value}`)}</p>`
     }),
   ].join('\n')
-  const filterTables = filters.map(filter =>
-    `<table>\n<thead>\n<tr><th scope="col">${renderInline(filter.heading)}</th></tr>\n</thead>\n<tbody>\n${filter.entries.map(entry => `<tr><th scope="row">${renderInline(entry)}</th></tr>`).join('\n')}\n</tbody>\n</table>`)
+  const filterLists = filters.map(filter =>
+    `<section class="matrix-filter">\n<h2>${renderInline(filter.heading)}</h2>\n<ul>\n${filter.entries.map(entry => `<li>${renderInline(entry)}</li>`).join('\n')}\n</ul>\n</section>`)
     .join('\n')
   const table: TableBlock = {
     kind: 'table',
@@ -4011,7 +4048,113 @@ function reconstructPositionedMatrixWithFilters(
     columnGroups,
     columnAnchors: headerCells.map(cell => cell.anchor),
   }
-  return `${title}${metadata}${context}\n<div class="matrix-with-filters">\n<aside class="matrix-filters">\n${filterTables}\n</aside>\n<div class="matrix-content">\n${renderTable(table)}\n</div>\n</div>`
+  return `${title}${metadata}${context}\n<div class="matrix-with-filters">\n<aside class="matrix-filters">\n${filterLists}\n</aside>\n<div class="matrix-content">\n${renderTable(table)}\n</div>\n</div>`
+}
+
+function alignStructuredValuesToColumns(
+  table: TableBlock,
+  positionedText: StructuredTextItem[],
+): TableBlock {
+  const bodyRows = table.body.filter((row): row is TableRow => row.kind === 'row')
+  if (
+    table.header[0] !== 'Row label'
+    || table.header.slice(1).some(header => !header || /^Column \d+$/i.test(header))
+    || bodyRows.length < 2
+    || bodyRows.some(row => row.cells.slice(1).filter(Boolean).some(cell =>
+      cell.split('<br>').some(value => !isStructuredTableValue(value))))
+  ) {
+    return table
+  }
+
+  let precedingBaseline = Infinity
+  const locatedRows: Array<{
+    baseline: number
+    fontSize: number
+    labelX: number
+    row: TableRow
+  }> = []
+  for (const row of bodyRows) {
+    const labels = (row.cells[0] ?? '').split('<br>').map(label => label.replaceAll('**', ''))
+    const candidates = positionedText
+      .filter(item =>
+        labels.includes(item.str)
+        && item.y < precedingBaseline - item.fontSize * 0.2)
+      .sort((left, right) => right.y - left.y)
+    const labelItem = candidates[0]
+    if (!labelItem) {
+      return table
+    }
+    locatedRows.push({
+      baseline: labelItem.y,
+      fontSize: labelItem.fontSize,
+      labelX: labelItem.x,
+      row,
+    })
+    precedingBaseline = labelItem.y
+  }
+
+  const locatedValues = locatedRows.flatMap(({ baseline, fontSize, row }) =>
+    positionedText
+      .filter(item =>
+        isStructuredTableValue(item.str)
+        && Math.abs(item.y - baseline) <= Math.max(fontSize, item.fontSize) * 0.35)
+      .map(item => ({ item, row })))
+  if (locatedValues.length < 2) {
+    return table
+  }
+  const localValues = locatedValues.map(value => value.item.str)
+  let anchorItems = locatedValues.map(value => value.item)
+  if (localValues.every(value => /^X$/i.test(value))) {
+    anchorItems = positionedText.filter(item => /^X$/i.test(item.str))
+  }
+  else if (localValues.every(value => /^\(?[+-]?\$/.test(value))) {
+    anchorItems = positionedText.filter(item => /^\(?[+-]?\$/.test(item.str))
+  }
+  else if (localValues.every(value => /^(?:-|\d+\/\d+)$/.test(value))) {
+    anchorItems = positionedText.filter(item => /^(?:-|\d+\/\d+)$/.test(item.str))
+  }
+  const valueAnchors: Array<{ fontSize: number, positions: number[], x: number }> = []
+  for (const item of anchorItems.sort((left, right) => left.x - right.x)) {
+    const anchor = valueAnchors.find(candidate =>
+      Math.abs(candidate.x - item.x) <= Math.max(candidate.fontSize, item.fontSize) * 1.5)
+    if (anchor) {
+      anchor.positions.push(item.x)
+      anchor.x = medianNumber(anchor.positions)
+      continue
+    }
+    valueAnchors.push({ fontSize: item.fontSize, positions: [item.x], x: item.x })
+  }
+  if (valueAnchors.length !== table.header.length - 1) {
+    return table
+  }
+
+  const rebuiltRows = new Map(bodyRows.map(row => [
+    row,
+    [row.cells[0] ?? '', ...Array.from<string>({ length: valueAnchors.length }).fill('')],
+  ]))
+  for (const { item, row } of locatedValues) {
+    const columnIndex = valueAnchors
+      .map((anchor, anchorIndex) => ({
+        anchorIndex,
+        distance: Math.abs(anchor.x - item.x),
+      }))
+      .sort((left, right) => left.distance - right.distance)[0]!
+      .anchorIndex + 1
+    const cells = rebuiltRows.get(row)!
+    cells[columnIndex] = cells[columnIndex]
+      ? `${cells[columnIndex]}<br>${item.str}`
+      : item.str
+  }
+  return {
+    ...table,
+    columnAnchors: [
+      medianNumber(locatedRows.map(row => row.labelX)),
+      ...valueAnchors.map(anchor => anchor.x),
+    ],
+    body: table.body.map(row => row.kind === 'row'
+      ? { ...row, cells: rebuiltRows.get(row)! }
+      : row),
+  }
 }
 
 function enrichPositionedTableLayout(
@@ -4035,9 +4178,10 @@ function enrichPositionedTableLayout(
       continue
     }
 
-    const bodyRows = block.body.filter((row): row is TableRow => row.kind === 'row')
+    const alignedBlock = alignStructuredValuesToColumns(block, positionedText)
+    const bodyRows = alignedBlock.body.filter((row): row is TableRow => row.kind === 'row')
     const locatedBodyCells = locateTableCells(bodyRows.map(row => row.cells), positionedText)
-    const columnAnchors = block.header.map((_, columnIndex) => {
+    const columnAnchors = alignedBlock.header.map((_, columnIndex) => {
       const positions = locatedBodyCells
         .filter(cell => cell.cellIndex === columnIndex)
         .map(cell => cell.x)
@@ -4045,10 +4189,11 @@ function enrichPositionedTableLayout(
       return positions[Math.floor(positions.length / 2)]
     })
     let table: TableBlock = {
-      ...block,
-      columnAnchors: columnAnchors.every(anchor => anchor !== undefined)
-        ? columnAnchors as number[]
-        : block.columnAnchors,
+      ...alignedBlock,
+      columnAnchors: alignedBlock.columnAnchors
+        ?? (columnAnchors.every(anchor => anchor !== undefined)
+          ? columnAnchors as number[]
+          : undefined),
     }
     const detachedContext: PageBlock[] = []
 
@@ -4103,6 +4248,9 @@ function enrichPositionedTableLayout(
         .sort((left, right) => left.x - right.x)
         .map(item => item.str)
       const currentLeafHeader = table.header.map(cell => cell.split('<br>').at(-1) ?? '')
+      const populatedLeafHeaders = leafHeader.filter(Boolean)
+      const leafHeaderLooksLikeRecord = populatedLeafHeaders.filter(isStructuredTableValue).length >= 2
+        && populatedLeafHeaders.some(header => !isStructuredTableValue(header))
       const note = positionedText
         .filter(item =>
           item.y > leafHeaderLine.y
@@ -4110,8 +4258,9 @@ function enrichPositionedTableLayout(
           && item.str.length >= 60)
         .sort((left, right) => left.y - right.y)[0]
       if (
-        note
-        || leafHeader.some((label, columnIndex) => label !== currentLeafHeader[columnIndex])
+        !leafHeaderLooksLikeRecord
+        && (note
+          || leafHeader.some((label, columnIndex) => label !== currentLeafHeader[columnIndex]))
       ) {
         table = { ...table, header: leafHeader }
       }
@@ -4282,7 +4431,48 @@ function enrichPositionedTableLayout(
         }
         return { kind: 'row' as const, cells }
       })
-      table.body.push({ kind: 'section', label: heading.text }, ...alignedRows)
+      const surroundingRows = [
+        ...table.body.filter((row): row is TableRow => row.kind === 'row'),
+        ...alignedRows,
+      ]
+      const markerMatrix = surroundingRows.length >= 2
+        && surroundingRows.filter(row =>
+          row.cells.filter(cell => /^(?:[X–—-]|N\/?A)$/i.test(cell)).length >= 2).length >= 2
+      const rowLabelFontCounts = new Map<string, number>()
+      if (markerMatrix) {
+        for (const row of surroundingRows) {
+          const rowLabel = row.cells[0]
+          if (!rowLabel) {
+            continue
+          }
+          for (const textRun of positionedText) {
+            if (textRun.str !== rowLabel || !textRun.fontKey) {
+              continue
+            }
+            rowLabelFontCounts.set(
+              textRun.fontKey,
+              (rowLabelFontCounts.get(textRun.fontKey) ?? 0) + 1,
+            )
+          }
+        }
+      }
+      const dominantRowLabelFont = [...rowLabelFontCounts]
+        .sort((left, right) => right[1] - left[1])[0]?.[0]
+      const headingUsesMarkerRowFont = dominantRowLabelFont !== undefined
+        && positionedText.some(textRun =>
+          textRun.str === heading.text && textRun.fontKey === dominantRowLabelFont)
+      table.body.push(
+        headingUsesMarkerRowFont
+          ? {
+              kind: 'row',
+              cells: [
+                heading.text,
+                ...Array.from<string>({ length: table.header.length - 1 }).fill(''),
+              ],
+            }
+          : { kind: 'section', label: heading.text },
+        ...alignedRows,
+      )
       followingIndex += 2
     }
     merged.push(table)
@@ -5262,7 +5452,9 @@ tfoot { border-top: 2px solid #475569; }
 .table-with-notes aside { margin-top: 1rem; }
 .matrix-with-filters { align-items: start; display: grid; gap: 1rem; grid-template-columns: max-content minmax(0, 1fr); }
 .matrix-filters { display: flex; flex-wrap: wrap; gap: .5rem; }
-.matrix-filters table { margin: 0; min-width: 7rem; }
+.matrix-filter { min-width: 7rem; }
+.matrix-filter h2 { font-size: 1rem; margin: 0 0 .25rem; }
+.matrix-filter ul { margin: 0; padding-left: 1.25rem; }
 .matrix-content { max-width: 100%; overflow-x: auto; }
 .spatial-content { margin: 1rem 0; max-width: 100%; overflow-x: auto; }
 @media (max-width: 700px) { .matrix-with-filters { grid-template-columns: 1fr; } }
@@ -5408,6 +5600,101 @@ function parsePageBlocks(page: string): PageBlock[] {
   return blocks
 }
 
+interface FinancialParagraphRecord {
+  account: string
+  description: string
+  note: string
+  values: string[]
+}
+
+function parseFinancialParagraphRecord(line: string): FinancialParagraphRecord | undefined {
+  const tokens = line.split(/\s+/).filter(Boolean)
+  if (!/^\d{5}-\d{3}$/.test(tokens[0] ?? '')) {
+    return undefined
+  }
+  const firstValueIndex = tokens.findIndex((token, tokenIndex) =>
+    tokenIndex > 0 && /^-?\d[\d,]*(?:\.\d+)?%?$/.test(token))
+  if (firstValueIndex <= 1) {
+    return undefined
+  }
+  let noteStart = firstValueIndex
+  while (noteStart < tokens.length && /^-?\d[\d,]*(?:\.\d+)?%?$/.test(tokens[noteStart]!)) {
+    noteStart++
+  }
+  const values = tokens.slice(firstValueIndex, noteStart)
+  if (values.length < 3) {
+    return undefined
+  }
+  return {
+    account: tokens[0]!,
+    description: tokens.slice(1, firstValueIndex).join(' '),
+    note: tokens.slice(noteStart).join(' '),
+    values,
+  }
+}
+
+function promoteFinancialParagraphTables(blocks: PageBlock[]): PageBlock[] {
+  return blocks.flatMap((block): PageBlock[] => {
+    if (block.kind !== 'paragraph') {
+      return [block]
+    }
+    const firstRecordIndex = block.lines.findIndex(line =>
+      parseFinancialParagraphRecord(line) !== undefined)
+    if (firstRecordIndex < 0) {
+      return [block]
+    }
+    const records = block.lines.slice(firstRecordIndex)
+      .map(parseFinancialParagraphRecord)
+    if (records.length < 3 || records.includes(undefined)) {
+      return [block]
+    }
+    const financialRecords = records as FinancialParagraphRecord[]
+    const valueCount = financialRecords[0]!.values.length
+    if (financialRecords.some(record => record.values.length !== valueCount)) {
+      return [block]
+    }
+
+    const leadingLines = block.lines.slice(0, firstRecordIndex)
+    const calendarLabels = leadingLines.at(-1)?.match(
+      /(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4}|Total/g,
+    ) ?? []
+    const hasCalendarHeader = calendarLabels.length === valueCount
+    const valueHeaders = hasCalendarHeader
+      ? calendarLabels
+      : valueCount === 9
+        ? [
+            'Current Actual',
+            'Current Budget',
+            'Current Variance',
+            'Current Variance %',
+            'YTD Actual',
+            'YTD Budget',
+            'YTD Variance',
+            'YTD Variance %',
+            'Annual Budget',
+          ]
+        : Array.from({ length: valueCount }, (_, valueIndex) => `Value ${valueIndex + 1}`)
+    const hasNotes = financialRecords.some(record => record.note.length > 0)
+    const header = ['Account', 'Description', ...valueHeaders, ...(hasNotes ? ['Notes'] : [])]
+    const body: TableRow[] = financialRecords.map(record => ({
+      kind: 'row',
+      cells: [
+        record.account,
+        record.description,
+        ...record.values,
+        ...(hasNotes ? [record.note] : []),
+      ],
+    }))
+    const remainingLeadingLines = hasCalendarHeader ? leadingLines.slice(0, -1) : leadingLines
+    return [
+      ...(remainingLeadingLines.length > 0
+        ? [{ kind: 'paragraph' as const, lines: remainingLeadingLines }]
+        : []),
+      { kind: 'table', header, body },
+    ]
+  })
+}
+
 function mergeTableSections(
   blocks: PageBlock[],
   positionedText: StructuredTextItem[],
@@ -5471,23 +5758,74 @@ function mergeTableSections(
       const continuationRows = continuation.kind === 'table'
         ? continuation.body.filter((row): row is TableRow => row.kind === 'row')
         : []
+      const bridgedLabelText = !bridgesMultipleLabels
+        ? label.kind === 'heading'
+          ? label.text
+          : label.kind === 'paragraph' && label.lines.length === 1
+            ? label.lines[0]
+            : undefined
+        : undefined
+      const surroundingRows = [
+        ...table.body.filter((row): row is TableRow => row.kind === 'row'),
+        ...continuationRows,
+      ]
+      const markerMatrix = surroundingRows.length >= 2
+        && surroundingRows.filter(row =>
+          row.cells.filter(cell => /^(?:[X–—-]|N\/?A)$/i.test(cell)).length >= 2).length >= 2
+      const rowLabelFontCounts = new Map<string, number>()
+      if (markerMatrix) {
+        for (const row of surroundingRows) {
+          const rowLabel = row.cells[0]
+          if (!rowLabel) {
+            continue
+          }
+          for (const textRun of positionedText) {
+            if (textRun.str !== rowLabel || !textRun.fontKey) {
+              continue
+            }
+            rowLabelFontCounts.set(
+              textRun.fontKey,
+              (rowLabelFontCounts.get(textRun.fontKey) ?? 0) + 1,
+            )
+          }
+        }
+      }
+      const dominantRowLabelFont = [...rowLabelFontCounts]
+        .sort((left, right) => right[1] - left[1])[0]?.[0]
+      const labelUsesMarkerRowFont = bridgedLabelText !== undefined
+        && dominantRowLabelFont !== undefined
+        && positionedText.some(textRun =>
+          textRun.str === bridgedLabelText && textRun.fontKey === dominantRowLabelFont)
       const headerlessSectionContinuation = compactSectionHeading
         && continuation.kind === 'table'
         && continuation.header.every(cell => cell.length === 0)
         && continuationRows.length > 0
-        && continuationRows.every(row => row.cells.length <= table.header.length - 1)
+        && continuationRows.every(row => row.cells.length <= table.header.length)
       if (headerlessSectionContinuation && label.kind === 'heading') {
         const alignedRows = continuationRows.map(row => ({
           kind: 'row' as const,
-          cells: [
-            '',
-            ...row.cells,
-            ...Array.from<string>({
-              length: table.header.length - row.cells.length - 1,
-            }).fill(''),
-          ],
+          cells: row.cells.length === table.header.length
+            ? row.cells
+            : [
+                '',
+                ...row.cells,
+                ...Array.from<string>({
+                  length: table.header.length - row.cells.length - 1,
+                }).fill(''),
+              ],
         }))
-        table.body.push({ kind: 'section', label: label.text }, ...alignedRows)
+        table.body.push(
+          labelUsesMarkerRowFont
+            ? {
+                kind: 'row',
+                cells: [
+                  label.text,
+                  ...Array.from<string>({ length: table.header.length - 1 }).fill(''),
+                ],
+              }
+            : { kind: 'section', label: label.text },
+          ...alignedRows,
+        )
         followingIndex += 2
         continue
       }
@@ -5655,7 +5993,16 @@ function mergeTableSections(
         && precedingRow.cells.filter(cell => parseFinancialValue(cell) !== undefined).length >= 2
         && leadingDetailRows.length >= 2
         && leadingDetailRows.some(row => (row.cells[1] ?? '').length > 0)
-      if (continuesFirstColumn && precedingRow?.kind === 'row') {
+      if (labelUsesMarkerRowFont) {
+        table.body.push({
+          kind: 'row',
+          cells: [
+            sectionLabel,
+            ...Array.from<string>({ length: table.header.length - 1 }).fill(''),
+          ],
+        }, ...alignedRows)
+      }
+      else if (continuesFirstColumn && precedingRow?.kind === 'row') {
         table.body[table.body.length - 1] = {
           kind: 'row',
           cells: [
@@ -6017,6 +6364,17 @@ function headersAreEqual(left: string[], right: string[]): boolean {
     && left.every((cell, index) => cell === right[index])
 }
 
+function tableRecordsAreEqual(left: string[], right: string[]): boolean {
+  const normalized = (record: string[]) => {
+    const cells = record.map(cell => cell.replaceAll('**', '').trim())
+    while (cells.at(-1) === '') {
+      cells.pop()
+    }
+    return cells
+  }
+  return headersAreEqual(normalized(left), normalized(right))
+}
+
 function tableSchemasAreCompatible(left: string[], right: string[]): boolean {
   if (Math.abs(left.length - right.length) > 1) {
     return false
@@ -6279,7 +6637,7 @@ function promoteLeadingHeaderRows(table: TableBlock): TableBlock {
   const rows = table.body.flatMap(row => row.kind === 'row' ? [row.cells] : [])
   const firstRecordRow = rows.findIndex((row) => {
     const populated = row.filter(Boolean)
-    const numeric = populated.filter(isStructuredNumericCell)
+    const numeric = populated.filter(isStructuredTableValue)
     return populated.length >= 3 && numeric.length >= Math.ceil(populated.length / 3)
   })
   const hasColumnGroupLabel = rows.some((row) => {
@@ -6290,14 +6648,14 @@ function promoteLeadingHeaderRows(table: TableBlock): TableBlock {
     && rows.length >= 2
     && rows.length <= 4
     && hasColumnGroupLabel
-    && rows.every(row => row.filter(Boolean).length >= 2 && row.every(cell => !isStructuredNumericCell(cell)))
+    && rows.every(row => row.filter(Boolean).length >= 2 && row.every(cell => !isStructuredTableValue(cell)))
     ? rows.length
     : firstRecordRow
   if (headerRowCount <= 0 || headerRowCount > 4) {
     return table
   }
   const headerRows = rows.slice(0, headerRowCount)
-  if (headerRows.some(row => row.filter(Boolean).length < 2 || row.some(isStructuredNumericCell))) {
+  if (headerRows.some(row => row.filter(Boolean).length < 2 || row.some(isStructuredTableValue))) {
     return table
   }
   const columnCount = Math.max(table.header.length, ...headerRows.map(row => row.length))
@@ -6365,7 +6723,12 @@ function expandCalendarColumns(table: TableBlock): TableBlock {
 
 function isStructuredNumericCell(cell: string): boolean {
   const value = cell.replaceAll('**', '')
-  return /^(?:(?:-|[+\-]?\$?\(?\d[\d,]*(?:\.\d+)?%?\)?|\d+\/\d+|\d{1,4}[-/]\d{1,2}[-/]\d{1,4})\s*\*?|#DIV\/0!)$/.test(value)
+  return /^(?:(?:-|[+\-]?\$?\(?\d[\d,]*(?:\.\d+)?%?\)?(?:\s+[A-Z]{3})?|\d+\/\d+|\d{1,4}[-/]\d{1,2}[-/]\d{1,4}|(?:January|February|March|April|May|June|July|August|September|October|November|December) \d{1,2}, \d{4})\s*\*?|#DIV\/0!)$/.test(value)
+}
+
+function isStructuredTableValue(cell: string): boolean {
+  const value = cell.replaceAll('**', '')
+  return isStructuredNumericCell(value) || /^(?:[X–—]|N\/?A)$/i.test(value)
 }
 
 function renderPageBlock(block: PageBlock): string {
@@ -6392,10 +6755,48 @@ function renderPageBlock(block: PageBlock): string {
       `<section>${section.heading ? `\n<h3>${renderInline(section.heading)}</h3>` : ''}\n${renderTable(section.table)}${section.notes.map(note => `\n<p>${renderInline(note)}</p>`).join('')}\n</section>`)
     return `<div class="parallel-tables" style="--parallel-count: ${block.sections.length}">\n${sections.join('\n')}\n</div>`
   }
+  const rows = block.body.filter((row): row is TableRow => row.kind === 'row')
+  const standaloneLabels = rows.length === 1
+    && block.header.every(header => header.length === 0)
+    ? rows[0]!.cells.filter(Boolean)
+    : []
+  if (
+    standaloneLabels.length >= 4
+    && standaloneLabels.every(label => !isStructuredTableValue(label))
+  ) {
+    return `<p>${standaloneLabels.map(renderInline).join('<br>')}</p>`
+  }
+  if (isRepeatedHeaderOnlyTable(block)) {
+    return ''
+  }
   if (isReportMetadata(block)) {
     return renderReportMetadata(block)
   }
   return renderTable(block)
+}
+
+function isRepeatedHeaderOnlyTable(table: TableBlock): boolean {
+  const rows = table.body.filter((row): row is TableRow => row.kind === 'row')
+  if (!table.header.some(Boolean)) {
+    return false
+  }
+  if (rows.length === 0) {
+    return true
+  }
+  if (rows.length > 3) {
+    return false
+  }
+  const bodyValues = rows.flatMap(row => row.cells.filter(Boolean))
+  if (
+    bodyValues.length < 2
+    || bodyValues.some(isStructuredTableValue)
+  ) {
+    return false
+  }
+  const headerWords = new Set(table.header
+    .flatMap(value => value.toLowerCase().match(/[a-z]+/g) ?? []))
+  const bodyWords = bodyValues.flatMap(value => value.toLowerCase().match(/[a-z]+/g) ?? [])
+  return bodyWords.length > 0 && bodyWords.every(word => headerWords.has(word))
 }
 
 function renderOrderedList(entries: OrderedListEntry[]): string {
@@ -6441,15 +6842,20 @@ function renderOrderedList(entries: OrderedListEntry[]): string {
   return `<ol${listAttributes(parents.map(parent => parent.entry))}>\n${renderedEntries.join('\n')}\n</ol>`
 }
 
+function isReportMetadataValue(value: string): boolean {
+  return /\b(?:Page \d+ of \d+|Reports?\b|As of\b|Account #)|\bv\d+(?:\.\d+)*\b|\b[a-z]{2,}-\d{3}-\d{3}\b|\d{1,2}\/\d{1,2}\/\d{2,4}|\d{1,2}:\d{2}|\b(?:January|February|March|April|May|June|July|August|September|October|November|December) \d{1,2}, \d{4}\b|^\d+(?:\.\d+){2,}$/i.test(value)
+}
+
 function isReportMetadata(table: TableBlock): boolean {
   const rows = [table.header, ...table.body.flatMap(row => row.kind === 'row' ? [row.cells] : [])]
     .filter(row => row.some(cell => cell.length > 0))
-  if (table.header.length > 3 || rows.length > 4) {
+  if (table.header.length > 6 || rows.length > 4) {
     return false
   }
-  const metadataValues = rows.flat().filter(value =>
-    /\b(?:Page \d+ of \d+|Reports?\b|As of\b)|\bv\d+(?:\.\d+)*\b|\d{1,2}\/\d{1,2}\/\d{2,4}|\d{1,2}:\d{2}|^\d+(?:\.\d+){2,}$/i.test(value))
+  const populatedValues = rows.flat().filter(Boolean)
+  const metadataValues = populatedValues.filter(isReportMetadataValue)
   return metadataValues.length >= 2
+    && metadataValues.length >= Math.ceil(populatedValues.length * 0.3)
 }
 
 function renderReportMetadata(table: TableBlock): string {
@@ -6459,6 +6865,56 @@ function renderReportMetadata(table: TableBlock): string {
     `<p class="metadata-row">${row.filter(Boolean).map(value => `<span>${renderInline(value)}</span>`).join('')}</p>`)
     .join('\n')
   return `<header class="report-metadata">\n${content}\n</header>`
+}
+
+function ensureDataTableHeaders(table: TableBlock): TableBlock {
+  const rows = table.body.filter((row): row is TableRow => row.kind === 'row')
+  const structuredValueCount = rows.reduce((count, row) =>
+    count + row.cells.filter(isStructuredTableValue).length, 0)
+  if (structuredValueCount < 2 || table.header.length < 2) {
+    return table
+  }
+
+  const populatedHeaders = table.header.filter(Boolean)
+  const structuredHeaderCount = populatedHeaders.filter(isStructuredTableValue).length
+  const hasUsableHeaders = populatedHeaders.length > 0
+    && !populatedHeaders.every(isReportMetadataValue)
+    && structuredHeaderCount < Math.ceil(populatedHeaders.length * 0.5)
+  const labelColumnCounts = table.header.map((_, columnIndex) => rows.filter((row) => {
+    const value = row.cells[columnIndex] ?? ''
+    return value.length > 0 && !isStructuredTableValue(value)
+  }).length)
+  const labelColumn = labelColumnCounts
+    .map((count, columnIndex) => ({ columnIndex, count }))
+    .sort((left, right) => right.count - left.count || left.columnIndex - right.columnIndex)[0]
+    ?.columnIndex ?? 0
+  if (hasUsableHeaders) {
+    if (table.header.every(Boolean)) {
+      return table
+    }
+    return {
+      ...table,
+      header: table.header.map((header, columnIndex) => header
+        || (columnIndex === labelColumn ? 'Row label' : `Column ${columnIndex + 1}`)),
+    }
+  }
+
+  const generatedHeaders = table.header.map((_, columnIndex) => {
+    if (table.header.length === 2) {
+      return columnIndex === labelColumn ? 'Category' : 'Value'
+    }
+    return columnIndex === labelColumn ? 'Row label' : `Column ${columnIndex + 1}`
+  })
+  return { ...table, header: generatedHeaders }
+}
+
+function rowHeaderColumn(cells: string[]): number {
+  if (cells[0]) {
+    return 0
+  }
+  const textualColumn = cells.findIndex(cell =>
+    cell.length > 0 && !isStructuredTableValue(cell))
+  return textualColumn >= 0 ? textualColumn : cells.findIndex(Boolean)
 }
 
 function inferLeadingRowGroups(table: TableBlock): TableBlock {
@@ -6541,7 +6997,41 @@ function inferLeadingRowGroups(table: TableBlock): TableBlock {
 }
 
 function renderTable(sourceTable: TableBlock): string {
-  const table = inferLeadingRowGroups(sourceTable)
+  const populatedSourceHeaders = sourceTable.header.filter(Boolean)
+  const structuredSourceHeaderCount = populatedSourceHeaders.filter(isStructuredTableValue).length
+  const sourceHeaderIsRecord = structuredSourceHeaderCount >= 2
+    && structuredSourceHeaderCount >= Math.ceil(populatedSourceHeaders.length * 0.5)
+    && populatedSourceHeaders.some(header => !isStructuredTableValue(header))
+  const tableWithHeaderRecord: TableBlock = sourceHeaderIsRecord
+    ? {
+        ...sourceTable,
+        header: sourceTable.header.map(() => ''),
+        body: [{ kind: 'row', cells: sourceTable.header }, ...sourceTable.body],
+        columnGroups: undefined,
+      }
+    : sourceTable
+  const repeatedHeaderWidth = tableWithHeaderRecord.header.length / 2
+  const headerHalvesMatch = tableWithHeaderRecord.header.slice(0, repeatedHeaderWidth)
+    .every((label, columnIndex) =>
+      label === tableWithHeaderRecord.header[columnIndex + repeatedHeaderWidth])
+  const repeatedColumnsAreEmpty = tableWithHeaderRecord.body
+    .every(row => row.kind === 'section'
+      || row.cells.slice(repeatedHeaderWidth).every(cell => cell.length === 0))
+  const hasRepeatedEmptyColumns = Number.isInteger(repeatedHeaderWidth)
+    && repeatedHeaderWidth >= 2
+    && headerHalvesMatch
+    && repeatedColumnsAreEmpty
+  const compactSourceTable: TableBlock = hasRepeatedEmptyColumns
+    ? {
+        ...tableWithHeaderRecord,
+        header: tableWithHeaderRecord.header.slice(0, repeatedHeaderWidth),
+        body: tableWithHeaderRecord.body.map(row => row.kind === 'section'
+          ? row
+          : { ...row, cells: row.cells.slice(0, repeatedHeaderWidth) }),
+        columnGroups: undefined,
+      }
+    : tableWithHeaderRecord
+  let table = inferLeadingRowGroups(compactSourceTable)
   const columnCount = table.header.length
   const tableRows = table.body.filter((row): row is TableRow => row.kind === 'row')
   const yearGroupSpans = new Map<number, number>()
@@ -6586,6 +7076,7 @@ function renderTable(sourceTable: TableBlock): string {
     const notes = trailingNotes.map(note => `<p>${renderInline(note)}</p>`).join('\n')
     return `<div class="table-with-notes">\n${renderTable(primaryTable)}\n<aside>\n${notes}\n</aside>\n</div>`
   }
+  table = ensureDataTableHeaders(table)
   const header = table.header.some(cell => cell.length > 0)
     ? `<thead>\n${renderTableHeader(table, hierarchyDepth)}\n</thead>\n`
     : ''
@@ -6615,12 +7106,13 @@ function renderTable(sourceTable: TableBlock): string {
       ]
     }
     else if (row.rowSpans) {
+      const headerColumn = rowHeaderColumn(row.cells)
       cells = row.cells.flatMap((value, columnIndex) => {
         const rowSpan = row.rowSpans![columnIndex] ?? 1
         if (rowSpan === 0) {
           return []
         }
-        const tag = columnIndex === 0 && value.length > 0 ? 'th' : 'td'
+        const tag = columnIndex === headerColumn && value.length > 0 ? 'th' : 'td'
         const span = rowSpan > 1 ? ` rowspan="${rowSpan}"` : ''
         const scope = tag === 'th'
           ? ` scope="${rowSpan > 1 ? 'rowgroup' : 'row'}"`
@@ -6644,9 +7136,10 @@ function renderTable(sourceTable: TableBlock): string {
       ]
     }
     else {
+      const headerColumn = rowHeaderColumn(row.cells)
       cells = Array.from({ length: columnCount }, (_, columnIndex) => {
         const value = row.cells[columnIndex] ?? ''
-        const tag = columnIndex === 0 && value.length > 0 ? 'th' : 'td'
+        const tag = columnIndex === headerColumn && value.length > 0 ? 'th' : 'td'
         const scope = tag === 'th' ? ' scope="row"' : ''
         return `<${tag}${scope}>${renderInline(value)}</${tag}>`
       })
@@ -6711,6 +7204,7 @@ function renderTableTotal(
   columnCount: number,
   hierarchyDepth: number,
 ): string {
+  const headerColumn = rowHeaderColumn(row.cells)
   const firstValue = row.cells[0] ?? ''
   const hierarchyCells = Array.from({ length: hierarchyDepth }, (_, hierarchyLevel) => {
     if (hierarchyLevel !== (row.hierarchyLevel ?? 0)) {
@@ -6722,8 +7216,13 @@ function renderTableTotal(
   })
   const values = [
     ...hierarchyCells,
-    ...Array.from({ length: columnCount - 1 }, (_, metricIndex) =>
-      `<td>${renderInline(row.cells[metricIndex + 1] ?? '')}</td>`),
+    ...Array.from({ length: columnCount - 1 }, (_, metricIndex) => {
+      const columnIndex = metricIndex + 1
+      const value = row.cells[columnIndex] ?? ''
+      return columnIndex === headerColumn && value
+        ? `<th scope="row">${renderInline(value)}</th>`
+        : `<td>${renderInline(value)}</td>`
+    }),
   ]
   return `<tr class="summary">${values.join('')}</tr>`
 }
@@ -7145,15 +7644,67 @@ function inheritContinuationContext(structuredPages: string[]): void {
         .flatMap(line => structuredTableCells(line) ?? [])
       const localCaptionIntroducesTable = localCaptionIndex >= 0
         && localTableRows.every(cell =>
-          !isStructuredNumericCell(cell.replaceAll('**', '')))
+          !isStructuredTableValue(cell))
       if (localCaptionIntroducesTable) {
         continue
       }
 
-      if (cells.every(cell => cell.length === 0)) {
-        const inheritedHeader = previousHeaders.get(cells.length)
-        if (inheritedHeader && cells.length >= 4) {
+      const populatedHeaderCells = cells.filter(Boolean)
+      const metadataOnlyHeader = populatedHeaderCells.length > 0
+        && populatedHeaderCells.every(isReportMetadataValue)
+      const headerLooksLikeRecord = populatedHeaderCells.filter(isStructuredTableValue).length >= 2
+        && populatedHeaderCells.some(cell => !isStructuredTableValue(cell))
+      const repeatsLocalRecord = headerLooksLikeRecord
+        && precedingLines
+          .map(structuredTableCells)
+          .filter((row): row is string[] => row !== undefined)
+          .some(row => tableRecordsAreEqual(row, cells))
+      if (cells.every(cell => cell.length === 0) || metadataOnlyHeader || repeatsLocalRecord) {
+        const localHeaders = tableHeadersByColumnCount(precedingLines.join('\n'))
+        const hasLocalSchema = [...localHeaders.keys()].some(columnCount =>
+          Math.abs(columnCount - cells.length) <= 1)
+        if (hasLocalSchema) {
+          continue
+        }
+        const narrowedSchema = [...previousHeaders.values()].flatMap((header) => {
+          const previousHeaderCells = structuredTableCells(header)
+          if (!previousHeaderCells) {
+            return []
+          }
+          const recordHeaders = previousHeaderCells.filter(cell =>
+            !/^(?:Category|Description|Comp Average)$/i.test(cell))
+          return recordHeaders.length === cells.length - 1
+            ? [renderStructuredRow(['Row label', ...recordHeaders])]
+            : []
+        })[0]
+        const inheritedSchema = [
+          ...(previousHeaders.has(cells.length)
+            ? [[cells.length, previousHeaders.get(cells.length)!] as const]
+            : []),
+          ...[...previousHeaders.entries()].filter(([columnCount]) =>
+            columnCount === cells.length + 1),
+          ...(narrowedSchema
+            ? [[cells.length, narrowedSchema] as const]
+            : []),
+        ][0]
+        if (inheritedSchema && cells.length >= 4) {
+          const [columnCount, inheritedHeader] = inheritedSchema
           lines[lineIndex] = inheritedHeader
+          lines[lineIndex + 1] = renderStructuredRow(
+            Array.from<string>({ length: columnCount }).fill('---'),
+          )
+          if (columnCount > cells.length) {
+            for (let rowIndex = lineIndex + 2; rowIndex < lines.length; rowIndex++) {
+              const row = structuredTableCells(lines[rowIndex]!)
+              if (!row) {
+                break
+              }
+              const expandedRow = expandPackedNumericCells(row, columnCount)
+              if (expandedRow) {
+                lines[rowIndex] = renderStructuredRow(expandedRow)
+              }
+            }
+          }
           inheritedTableContext = true
         }
         continue
@@ -7194,7 +7745,7 @@ function inheritContinuationContext(structuredPages: string[]): void {
       const possibleStackedHeader = structuredTableCells(lines[lineIndex + 2] ?? '')
       if (
         possibleStackedHeader
-        && possibleStackedHeader.every(cell => !isStructuredNumericCell(cell.replaceAll('**', '')))
+        && possibleStackedHeader.every(cell => !isStructuredTableValue(cell))
         && headerWordOverlap(lines[lineIndex + 2]!, inheritedHeader) >= 3
       ) {
         lines.splice(lineIndex + 2, 1)
@@ -7355,6 +7906,7 @@ function tableHeadersByColumnCount(page: string): Map<number, string> {
     if (
       cells
       && cells.some(cell => cell.length > 0)
+      && cells.filter(isStructuredTableValue).length < Math.ceil(cells.filter(Boolean).length * 0.5)
       && /^\|(?:\s*---\s*\|)+$/.test(lines[lineIndex + 1]!)
     ) {
       headers.set(cells.length, lines[lineIndex]!)
@@ -7370,7 +7922,7 @@ function tableHeadersByColumnCount(page: string): Map<number, string> {
         const row = structuredTableCells(lines[rowIndex]!)
         if (
           !row
-          || row.some(cell => isStructuredNumericCell(cell.replaceAll('**', '')))
+          || row.some(isStructuredTableValue)
           || stackedRows.length === 4
         ) {
           break

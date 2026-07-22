@@ -251,10 +251,11 @@ describe('punpdf', () => {
     expect(html[0]).toContain('<tr><th scope="row">Demolition</th><td>2</td><td>450.00</td></tr>')
   })
 
-  it('keeps data-only table rows in the HTML body', async () => {
+  it('generates column labels for a data-only table', async () => {
     const { html } = await extractHTML(await getPDF('sideways-table.pdf'))
 
-    expect(html[0]).not.toContain('<thead>')
+    expect(html[0]).toContain('<th scope="col">Row label</th>')
+    expect(html[0]).toContain('<th scope="col">Column 2</th>')
     expect(html[0]).toContain('<tr><th scope="row">$1,947</th><td>$1,930</td><td>$1,842</td></tr>')
   })
 
@@ -295,7 +296,7 @@ describe('punpdf', () => {
   it('keeps every column when a financial table header precedes its section label', async () => {
     const { html } = await extractHTML(await getPDF('detached-financial-table-header.pdf'))
 
-    expect(html[0]).toContain('<tr><th scope="col"></th><th scope="col">Note</th><th scope="col">Current</th><th scope="col">Prior</th></tr>')
+    expect(html[0]).toContain('<tr><th scope="col">Row label</th><th scope="col">Note</th><th scope="col">Current</th><th scope="col">Prior</th></tr>')
     expect(html[0]).toContain('<tr><th scope="row">Cash</th><td>3</td><td>120</td><td>110</td></tr>')
     expect(html[0]).toContain('<tr><th scope="row">Investments</th><td>4</td><td>240</td><td>220</td></tr>')
   })
@@ -303,7 +304,7 @@ describe('punpdf', () => {
   it('keeps every column beneath a stacked financial table header', async () => {
     const { html } = await extractHTML(await getPDF('detached-financial-table-header.pdf'))
 
-    expect(html[1]).toContain('<tr><th scope="col"></th><th scope="col">Operating assets<br>Cash</th><th scope="col">Securities</th><th scope="col">Total assets<br>Total</th></tr>')
+    expect(html[1]).toContain('<tr><th scope="col">Row label</th><th scope="col">Operating assets<br>Cash</th><th scope="col">Securities</th><th scope="col">Total assets<br>Total</th></tr>')
     expect(html[1]).toContain('<tr><th scope="row">Opening balance</th><td>120</td><td>240</td><td>360</td></tr>')
     expect(html[1]).toContain('<tr><th scope="row">Closing balance</th><td>130</td><td>260</td><td>390</td></tr>')
   })
@@ -335,22 +336,24 @@ describe('punpdf', () => {
     expect(html[0]).toContain('8,452')
   })
 
-  it('uses spatial markup for a dense parallel financial table', async () => {
+  it('structures a dense parallel financial table with row and column labels', async () => {
     const { html } = await extractHTML(await getPDF('dense-parallel-financial-table.pdf'))
 
-    expect(html[0]).toContain('<figure class="spatial-content"><pre>')
-    expect(html[0]).toMatch(/Left subsidiary 01\s+100\.00\s+12/)
-    expect(html[0]).toMatch(/Right subsidiary 40\s+100\.00\s+24/)
-    expect(html[0]).not.toContain('<table>')
+    expect(html[0]!.match(/<table>/g)).toHaveLength(1)
+    expect(html[0]!.match(/<th scope="col">/g)).toHaveLength(3)
+    expect(html[0]).toContain('<th scope="col">Subsidiaries</th>')
+    expect(html[0]).toContain('<th scope="row">Left subsidiary 01</th><td>100.00</td><td>12</td>')
+    expect(html[0]).toContain('<tr><th scope="row">Right subsidiary 40</th><td>100.00</td><td>24</td></tr>')
+    expect(html[0]).not.toContain('<figure class="spatial-content">')
   })
 
-  it('uses spatial markup when placeholder financial records follow a wrapped header', async () => {
+  it('structures placeholder financial records that follow a wrapped header', async () => {
     const { html } = await extractHTML(await getPDF('placeholder-financial-records.pdf'))
 
-    expect(html[0]).toContain('<figure class="spatial-content"><pre>')
-    expect(html[0]).toMatch(/Supervisory function\s+-\s+-\s+-\s+-\s+-\s+-\s+-\s+-/)
-    expect(html[0]).toMatch(/Management function\s+58\.9\s+4\.1\s+4\.2\s+1\.9\s+48\.7/)
-    expect(html[0]).not.toContain('<table>')
+    expect(html[0]!.match(/<th scope="col">/g)).toHaveLength(9)
+    expect(html[0]).toContain('<th scope="row">Supervisory function</th><td>-</td>')
+    expect(html[0]).toContain('<th scope="row">Management function</th><td>58.9</td><td>4.1</td><td>4.2</td><td>1.9</td><td>48.7</td>')
+    expect(html[0]).not.toContain('<figure class="spatial-content">')
   })
 
   it('joins a wrapped financial row label without dropping its trailing value', async () => {
@@ -548,6 +551,7 @@ describe('punpdf', () => {
       {
         "dir": "ltr",
         "fontFamily": "sans-serif",
+        "fontKey": "font-1",
         "fontSize": 16.1,
         "hasEOL": false,
         "height": 16.1,
